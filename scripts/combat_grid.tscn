@@ -1,0 +1,11 @@
+[gd_scene format=3 uid="uid://bqvvpprdm6cge"]
+
+[ext_resource type="Script" uid="uid://cthnl31rf324s" path="res://scripts/hex_grid.gd" id="1_m1klq"]
+[ext_resource type="Script" uid="uid://fl14t2kcyohe" path="res://scripts/turn_manager.gd" id="2_7hn6t"]
+
+[node name="Combat_grid" type="Node2D" unique_id=1788730367]
+script = ExtResource("1_m1klq")
+turn_manager_path = NodePath("TurnManager")
+
+[node name="TurnManager" type="Node2D" parent="." unique_id=1557947043]
+script = ExtResource("2_7hn6t")
