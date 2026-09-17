@@ -22,6 +22,15 @@ class_name Spell
 @export var spell_name: String = "Attaque"
 @export var ea_cost: int = 3
 
+enum SpellType { PHYSICAL, PSYCHIC }
+
+## Type du sort — détermine quelle paire de stats est moyennée pour le
+## jet de lancer (voir HexGrid._resolve_spell_effect) : Intelligence +
+## Adresse pour un sort physique, Intelligence + Charisme pour un sort
+## psychique. Sans effet sur une attaque d'arme (is_weapon_attack),
+## qui utilise directement attack_stat.
+@export var spell_type: SpellType = SpellType.PHYSICAL
+
 ## Portée minimale et maximale en nombre de cases (distance à vol
 ## d'oiseau pour l'instant — la ligne de vue/les obstacles pour les
 ## sorts à distance viendront dans une itération future).

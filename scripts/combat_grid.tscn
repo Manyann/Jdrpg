@@ -2,10 +2,15 @@
 
 [ext_resource type="Script" uid="uid://cthnl31rf324s" path="res://scripts/hex_grid.gd" id="1_m1klq"]
 [ext_resource type="Script" uid="uid://fl14t2kcyohe" path="res://scripts/turn_manager.gd" id="2_7hn6t"]
+[ext_resource type="Script" uid="uid://b6ufqr47ia1ec" path="res://scripts/placement_manager.gd" id="3_p83wv"]
 
 [node name="Combat_grid" type="Node2D" unique_id=1788730367]
 script = ExtResource("1_m1klq")
 turn_manager_path = NodePath("TurnManager")
+placement_manager_path = NodePath("PlacementManager")
 
 [node name="TurnManager" type="Node2D" parent="." unique_id=1557947043]
 script = ExtResource("2_7hn6t")
+
+[node name="PlacementManager" type="Node2D" parent="." unique_id=1798987085]
+script = ExtResource("3_p83wv")

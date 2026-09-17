@@ -100,6 +100,27 @@ var active_unit: CombatUnit = null
 
 var _turn_manager = null
 
+## Chemin vers le node PlacementManager (optionnel). S'il est renseigné,
+## HexGrid ne place plus les unités automatiquement : il attend que
+## PlacementManager pilote une phase de placement interactive avant de
+## démarrer le combat (voir begin_combat_after_placement()).
+@export var placement_manager_path: NodePath
+
+var _placement_manager = null
+
+# Vrai pendant qu'on attend que le joueur clique une case pour y
+# placer l'unité en attente (_pending_placement_unit).
+var placement_mode_active: bool = false
+var _pending_placement_unit: CombatUnit = null
+var _placement_zone_cells = {}
+
+## Couleur des cases valides pendant la phase de placement.
+@export var placement_zone_color: Color = Color(0.9, 0.85, 0.25, 0.4)
+
+## Rayon (en cases) de la zone centrale utilisée par les modes
+## Embuscade/Défense (voir get_center_zone_cells / get_outer_zone_cells).
+@export var center_zone_radius: int = 2
+
 # Sort en cours de ciblage (null si on n'est pas en train de viser).
 var _casting_spell: Spell = null
 
@@ -123,11 +144,26 @@ func _ready() -> void:
 		position = get_viewport_rect().size / 2.0
 
 	generate_grid()
-	setup_starting_units()
 	queue_redraw()
 
 	if turn_manager_path != NodePath(""):
 		_turn_manager = get_node(turn_manager_path)
+
+	if placement_manager_path != NodePath(""):
+		_placement_manager = get_node(placement_manager_path)
+		_placement_manager.start_placement_phase(self)
+	else:
+		# Pas de phase de placement configurée : comportement historique,
+		# placement automatique instantané sur les zones par défaut.
+		print("HexGrid: 'Placement Manager Path' non renseigné — placement automatique (pas de choix de configuration).")
+		setup_starting_units()
+		if _turn_manager != null:
+			_turn_manager.start_combat(_all_units)
+
+# Appelée par PlacementManager une fois toutes les unités placées :
+# démarre le combat proprement dit (file d'initiative, premier tour).
+func begin_combat_after_placement() -> void:
+	if _turn_manager != null:
 		_turn_manager.start_combat(_all_units)
 
 # Devient vrai dès qu'une équipe n'a plus d'unité en vie. Bloque
@@ -165,6 +201,12 @@ func _unhandled_input(event: InputEvent) -> void:
 		var coord = pixel_to_axial(local_pos)
 
 		if not _cells.has(coord):
+			return
+
+		# En phase de placement, le clic sert uniquement à poser l'unité
+		# en attente sur une case valide de la zone autorisée.
+		if placement_mode_active:
+			_handle_placement_click(coord)
 			return
 
 		# En mode ciblage de sort, le clic sert uniquement à choisir la cible.
@@ -471,18 +513,15 @@ func _cast_spell(caster: CombatUnit, spell: Spell, target: CombatUnit) -> void:
 
 	var ea_cost = spell.get_effective_ea_cost()
 	caster.current_ea -= ea_cost
-	target.take_damage(spell.damage)
 
-	print("%s lance %s sur %s (%d dégâts)" % [caster.unit_name, spell.spell_name, target.unit_name, spell.damage])
-
-	# L'attaque mêlée est gratuite (0 EA) : pas la peine d'afficher "-0 EA".
+	# L'attaque d'arme est gratuite (0 EA) : pas la peine d'afficher "-0 EA".
 	if ea_cost > 0:
 		spawn_floating_text(caster.position, "-%d EA" % ea_cost, Color(0.65, 0.45, 0.95))
 
-	if spell.damage >= 0:
-		spawn_floating_text(target.position, "-%d" % spell.damage, Color(0.95, 0.3, 0.3))
+	if spell.is_weapon_attack:
+		_resolve_weapon_attack(caster, spell, target)
 	else:
-		spawn_floating_text(target.position, "+%d" % abs(spell.damage), Color(0.35, 0.9, 0.5))
+		_resolve_spell_effect(caster, spell, target)
 
 	cancel_targeting_mode()
 
@@ -490,6 +529,130 @@ func _cast_spell(caster: CombatUnit, spell: Spell, target: CombatUnit) -> void:
 		_turn_manager.refresh_ui()
 
 	queue_redraw()
+
+# ---------- Résolution des attaques : toucher, parade, esquive ----------
+
+# Une attaque d'arme (mêlée ou à distance) doit d'abord réussir son jet
+# de toucher, puis peut être parée (mêlée uniquement) ou esquivée par
+# le défenseur selon sa posture défensive.
+func _resolve_weapon_attack(caster: CombatUnit, spell: Spell, target: CombatUnit) -> void:
+	caster.face_direction(target.position)
+	caster.play_animation("attack" if spell.is_melee_range() else "ranged_attack")
+
+	var hit_roll = randi_range(1, 20)
+
+	if hit_roll >= caster.attack_stat:
+		print("%s rate son attaque (jet %d >= Attaque %d)." % [caster.unit_name, hit_roll, caster.attack_stat])
+		spawn_floating_text(target.position, "Raté", Color(0.65, 0.65, 0.65))
+		return
+
+	# Touché a priori : le défenseur peut tenter de parer (mêlée
+	# seulement) s'il est en posture Parade.
+	if spell.is_melee_range() and target.defensive_stance == CombatUnit.DefensiveStance.PARRY:
+		var parry_roll = randi_range(1, 20)
+		if parry_roll < target.parade_stat:
+			spawn_floating_text(target.position, "Paré !", Color(0.9, 0.8, 0.2))
+			_deal_counter_attack(target, caster)
+			return
+		# Parade ratée : les dégâts normaux s'appliquent plus bas.
+
+	if _try_dodge(target):
+		return
+
+	var effective_damage = spell.damage
+	if spell.is_melee_range():
+		effective_damage += caster.get_melee_damage_bonus()
+
+	target.take_damage(effective_damage)
+	spawn_floating_text(target.position, "-%d" % effective_damage, Color(0.95, 0.3, 0.3))
+
+	print("%s touche %s avec %s (%d dégâts)." % [caster.unit_name, target.unit_name, spell.spell_name, effective_damage])
+
+# Les sorts/enchantements doivent réussir un jet de lancer basé sur la
+# moyenne de deux stats (Intelligence + Adresse pour un sort physique,
+# Intelligence + Charisme pour un sort psychique). S'ils touchent, ils
+# peuvent être esquivés comme une attaque d'arme — SAUF un sort de
+# soin, qui ne peut jamais être esquivé.
+func _resolve_spell_effect(caster: CombatUnit, spell: Spell, target: CombatUnit) -> void:
+	caster.face_direction(target.position)
+	caster.play_animation("cast")  # Ignoré silencieusement si non définie pour cette classe.
+
+	var avg_stat: float
+	if spell.spell_type == Spell.SpellType.PSYCHIC:
+		avg_stat = (caster.intelligence_stat + caster.charisme_stat) / 2.0
+	else:
+		avg_stat = (caster.intelligence_stat + caster.adresse_stat) / 2.0
+
+	var cast_roll = randi_range(1, 20)
+	if cast_roll >= avg_stat:
+		print("%s rate son sort %s (jet %d >= moyenne %.1f)." % [caster.unit_name, spell.spell_name, cast_roll, avg_stat])
+		spawn_floating_text(target.position, "Raté", Color(0.65, 0.65, 0.65))
+		return
+
+	var is_heal = spell.damage < 0
+
+	# Un soin ne peut jamais être esquivé ; un sort offensif, si.
+	if not is_heal and _try_dodge(target):
+		return
+
+	var effective_damage = spell.damage
+	var spell_bonus = caster.get_spell_damage_bonus()
+	if is_heal:
+		effective_damage -= spell_bonus  # Renforce le soin (plus négatif).
+	else:
+		effective_damage += spell_bonus
+
+	target.take_damage(effective_damage)
+
+	if effective_damage >= 0:
+		spawn_floating_text(target.position, "-%d" % effective_damage, Color(0.95, 0.3, 0.3))
+	else:
+		spawn_floating_text(target.position, "+%d" % abs(effective_damage), Color(0.35, 0.9, 0.5))
+
+	print("%s touche %s avec %s (%d dégâts)." % [caster.unit_name, target.unit_name, spell.spell_name, effective_damage])
+
+# Tente une esquive pour le défenseur s'il est en posture Esquive et
+# que sa disponibilité d'esquive n'est pas déjà consommée ce tour-ci
+# (règle "1 attaque sur 2"). Renvoie true si l'attaque est esquivée.
+func _try_dodge(target: CombatUnit) -> bool:
+	if target.defensive_stance != CombatUnit.DefensiveStance.DODGE:
+		return false
+
+	if not target.dodge_available:
+		return false  # Esquive déjà "consommée" par l'attaque précédente.
+
+	target.dodge_available = false  # Consommée qu'elle réussisse ou non.
+
+	var dodge_roll = randi_range(1, 20)
+	if dodge_roll < target.adresse_stat:
+		spawn_floating_text(target.position, "Esquivé !", Color(0.4, 0.8, 1.0))
+		return true
+
+	return false
+
+# Le défenseur qui pare avec succès tente une riposte : elle doit
+# réussir son propre jet de toucher (stat Attaque du défenseur), et ne
+# peut JAMAIS être parée par l'attaquant original (sinon deux unités
+# en Parade s'annuleraient indéfiniment) — mais elle reste esquivable
+# normalement.
+func _deal_counter_attack(defender: CombatUnit, attacker: CombatUnit) -> void:
+	defender.face_direction(attacker.position)
+	var is_ranged = defender.equipped_weapon != null and defender.equipped_weapon.weapon_type == Weapon.WeaponType.RANGED
+	defender.play_animation("ranged_attack" if is_ranged else "attack")
+
+	var counter_roll = randi_range(1, 20)
+	if counter_roll >= defender.attack_stat:
+		spawn_floating_text(attacker.position, "Riposte ratée", Color(0.65, 0.65, 0.65))
+		return
+
+	if _try_dodge(attacker):
+		return
+
+	var base_damage = defender.equipped_weapon.damage if defender.equipped_weapon != null else 5
+	var counter_damage = base_damage + defender.get_melee_damage_bonus()
+
+	attacker.take_damage(counter_damage)
+	spawn_floating_text(attacker.position, "-%d (riposte)" % counter_damage, Color(0.95, 0.55, 0.2))
 
 # ---------- Gestion de la mort d'une unité ----------
 
@@ -559,34 +722,22 @@ func check_combat_end() -> bool:
 
 	return true
 
-# Crée une unité et la place sur une case donnée. Renvoie null si la
-# case n'existe pas ou est déjà occupée.
+# Construit une unité de combat SANS la placer sur la grille (pas de
+# position, pas d'ajout à l'arbre de scène, pas d'enregistrement dans
+# _cells/_all_units). Utilisé par la phase de placement interactive :
+# on construit toutes les unités à l'avance, puis on les place une par
+# une au clic via place_unit_at().
 #
 # `template_name` doit correspondre à une clé de UnitDatabase.TEMPLATES
-# (ex: "Barbare", "Haut Elfe", "Bouftou"...) : détermine les stats de base et les
-# sorts de l'unité. `courage_override` permet de personnaliser le
-# Courage d'une instance précise sans toucher au Courage par défaut de
-# la classe (utile pour varier l'ordre d'initiative entre unités
-# identiques, ex: plusieurs Bouftous).
-func spawn_unit(coord: Vector2i, team: int, template_name: String, courage_override: int = -1) -> CombatUnit:
-	if not _cells.has(coord):
-		push_warning("spawn_unit: case %s hors grille." % [coord])
-		return null
-
-	if is_occupied(coord):
-		push_warning("spawn_unit: case %s déjà occupée." % [coord])
-		return null
-
+# (ex: "Barbare", "Haut Elfe", "Bouftou"...) : détermine les stats de
+# base et les sorts de l'unité. `courage_override` permet de
+# personnaliser le Courage d'une instance précise sans toucher au
+# Courage par défaut de la classe.
+func build_unit(team: int, template_name: String, courage_override: int = -1) -> CombatUnit:
 	var unit := CombatUnit.new()
 	unit.team = team
 	unit.unit_name = template_name
-	unit.hex_coord = coord
-	unit.position = axial_to_pixel(coord)
 
-	# On applique les stats et sorts de la classe AVANT add_child : comme
-	# _ready() s'exécute dès l'entrée dans l'arbre de scène, il faut que
-	# ces valeurs soient déjà en place pour que l'unité démarre avec les
-	# bons PV/PM/EA et sans se voir attribuer un sort par défaut.
 	var stats = UnitDatabase.get_base_stats(template_name)
 	if not stats.is_empty():
 		unit.max_hp = stats.get("max_hp", unit.max_hp)
@@ -594,6 +745,13 @@ func spawn_unit(coord: Vector2i, team: int, template_name: String, courage_overr
 		unit.max_ea = stats.get("max_ea", unit.max_ea)
 		unit.courage = stats.get("courage", unit.courage)
 		unit.has_ambidextrie = stats.get("ambidextrie", false)
+		unit.attack_stat = stats.get("attack", unit.attack_stat)
+		unit.parade_stat = stats.get("parade", unit.parade_stat)
+		unit.adresse_stat = stats.get("adresse", unit.adresse_stat)
+		unit.force_stat = stats.get("force", unit.force_stat)
+		unit.intelligence_stat = stats.get("intelligence", unit.intelligence_stat)
+		unit.charisme_stat = stats.get("charisme", unit.charisme_stat)
+		unit.chance_stat = stats.get("chance", unit.chance_stat)
 		unit.spells = UnitDatabase.build_spells(template_name)
 		unit.equipped_weapon = UnitDatabase.build_weapon(template_name, "weapon")
 		unit.off_hand_weapon = UnitDatabase.build_weapon(template_name, "weapon_off_hand")
@@ -601,15 +759,111 @@ func spawn_unit(coord: Vector2i, team: int, template_name: String, courage_overr
 		unit.inventory_potions = UnitDatabase.build_potions(template_name)
 		unit.inventory_weapons = UnitDatabase.build_inventory_weapons(template_name)
 
+		var sprite_data = stats.get("sprite", null)
+		if sprite_data != null:
+			var sprite_path = sprite_data.get("path", "")
+			if sprite_path != "" and ResourceLoader.exists(sprite_path):
+				unit.sprite_sheet = load(sprite_path)
+				unit.sprite_frame_size = Vector2i(
+					sprite_data.get("frame_width", 32),
+					sprite_data.get("frame_height", 32)
+				)
+				unit.sprite_scale = sprite_data.get("scale", 2.0)
+				unit.sprite_y_offset = sprite_data.get("y_offset", 0.0)
+				unit.sprite_animations = UnitDatabase.build_sprite_animations(template_name)
+			else:
+				push_warning("build_unit: sprite introuvable à '%s' pour la classe '%s' (fallback sur le disque de couleur)." % [sprite_path, template_name])
+
 	if courage_override >= 0:
 		unit.courage = courage_override
+
+	return unit
+
+# Place une unité déjà construite (via build_unit) sur une case de la
+# grille : position, ajout à l'arbre de scène, enregistrement dans
+# _cells et _all_units. Renvoie false si la case n'existe pas ou est
+# déjà occupée (l'unité n'est alors ni ajoutée ni modifiée).
+func place_unit_at(unit: CombatUnit, coord: Vector2i) -> bool:
+	if not _cells.has(coord):
+		push_warning("place_unit_at: case %s hors grille." % [coord])
+		return false
+
+	if is_occupied(coord):
+		push_warning("place_unit_at: case %s déjà occupée." % [coord])
+		return false
+
+	unit.hex_coord = coord
+	unit.position = axial_to_pixel(coord)
 
 	add_child(unit)
 	_cells[coord]["occupant"] = unit
 	_all_units.append(unit)
 	unit.died.connect(_on_unit_died)
 
-	return unit
+	return true
+
+# Construit une unité ET la place directement sur une case donnée —
+# pratique quand on n'a pas besoin de phase de placement interactive
+# (comportement historique, voir setup_starting_units). Renvoie null
+# si le placement échoue (case invalide/occupée) ; l'unité construite
+# est alors libérée immédiatement pour ne pas fuiter en mémoire.
+func spawn_unit(coord: Vector2i, team: int, template_name: String, courage_override: int = -1) -> CombatUnit:
+	var unit = build_unit(team, template_name, courage_override)
+	if place_unit_at(unit, coord):
+		return unit
+	unit.queue_free()
+	return null
+
+# ---------- Phase de placement interactive ----------
+
+# Renvoie les cases à une distance <= radius du centre de la grille
+# (zone "centrale", utilisée par les modes Embuscade/Défense).
+func get_center_zone_cells(radius: int) -> Dictionary:
+	var result: Dictionary = {}
+	var origin = Vector2i(0, 0)
+	for coord in _cells.keys():
+		if hex_distance(origin, coord) <= radius:
+			result[coord] = true
+	return result
+
+# Renvoie toutes les cases à une distance > radius du centre (zone
+# "périphérique", complémentaire de get_center_zone_cells).
+func get_outer_zone_cells(radius: int) -> Dictionary:
+	var result: Dictionary = {}
+	var origin = Vector2i(0, 0)
+	for coord in _cells.keys():
+		if hex_distance(origin, coord) > radius:
+			result[coord] = true
+	return result
+
+# Active le mode placement pour une unité donnée : elle sera posée sur
+# la prochaine case valide (appartenant à zone_cells) cliquée par le
+# joueur. Appelé par PlacementManager, une unité à la fois.
+func start_placement(unit: CombatUnit, zone_cells) -> void:
+	_pending_placement_unit = unit
+	_placement_zone_cells = zone_cells
+	placement_mode_active = true
+	queue_redraw()
+
+# Traite un clic pendant la phase de placement : vérifie que la case
+# cliquée appartient à la zone autorisée et est libre, place l'unité
+# en attente, puis notifie PlacementManager pour passer à la suivante.
+func _handle_placement_click(coord: Vector2i) -> void:
+	if not _placement_zone_cells.has(coord) or is_occupied(coord):
+		return
+
+	if not place_unit_at(_pending_placement_unit, coord):
+		return
+
+	placement_mode_active = false
+	_pending_placement_unit = null
+	_placement_zone_cells = {}  # Nouvelle table vide plutôt que .clear() : la
+								# zone précédente est réutilisée par d'autres
+								# unités du même camp, il ne faut pas la vider.
+	queue_redraw()
+
+	if _placement_manager != null:
+		_placement_manager.on_unit_placed()
 
 # Déplace une unité déjà existante d'une case vers une autre (fera
 # l'objet d'une vraie logique de portée/pathfinding à l'étape suivante ;
@@ -644,21 +898,26 @@ func setup_starting_units() -> void:
 func _draw() -> void:
 	for coord in _cells.keys():
 		var center = axial_to_pixel(coord)
-
 		var fill = fill_color
-		if coord.x == -grid_radius:
-			fill = player_zone_color
-		elif coord.x == grid_radius:
-			fill = enemy_zone_color
 
-		if _casting_spell != null:
-			if _spell_range_cells.has(coord):
-				fill = spell_range_color
-		elif _reachable_cells.has(coord):
-			fill = reachable_color
+		if placement_mode_active:
+			if _placement_zone_cells.has(coord):
+				fill = placement_zone_color
+		else:
+			if coord.x == -grid_radius:
+				fill = player_zone_color
+			elif coord.x == grid_radius:
+				fill = enemy_zone_color
 
-		if _selected_unit != null and coord == _selected_unit.hex_coord:
-			fill = selected_color
+			if _casting_spell != null:
+				if _spell_range_cells.has(coord):
+					fill = spell_range_color
+			elif _reachable_cells.has(coord):
+				fill = reachable_color
+
+			if _selected_unit != null and coord == _selected_unit.hex_coord:
+				fill = selected_color
+
 		if _hovered_coord != null and coord == _hovered_coord:
 			fill = hover_color
 

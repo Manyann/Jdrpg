@@ -29,6 +29,11 @@ var _spell_buttons_container: HBoxContainer
 var _end_turn_button: Button
 var _inventory_button: Button
 
+# --- Posture défensive (choisie à son tour, active jusqu'au suivant) ---
+var _stance_group: ButtonGroup
+var _stance_parry_button: Button
+var _stance_dodge_button: Button
+
 # --- Fiche personnage (haut à droite) ---
 var _char_panel: PanelContainer
 var _char_name_label: Label
@@ -36,6 +41,7 @@ var _char_team_label: Label
 var _char_hp_bar: ProgressBar
 var _char_hp_label: Label
 var _char_ea_label: Label
+var _char_stats_label: Label
 
 # Unité actuellement affichée dans la fiche personnage (peut être
 # n'importe quelle unité cliquée, pas forcément celle dont c'est le tour).
@@ -87,19 +93,54 @@ func _build_ui() -> void:
 	_spell_buttons_container.add_theme_constant_override("separation", 6)
 	vbox.add_child(_spell_buttons_container)
 
+	var stance_title = Label.new()
+	stance_title.text = "Posture défensive :"
+	stance_title.add_theme_font_size_override("font_size", 14)
+	vbox.add_child(stance_title)
+
+	var stance_row = HBoxContainer.new()
+	stance_row.add_theme_constant_override("separation", 6)
+	vbox.add_child(stance_row)
+
+	_stance_group = ButtonGroup.new()
+
+	_stance_parry_button = Button.new()
+	_stance_parry_button.text = "⛨"
+	_stance_parry_button.tooltip_text = "Parade — annule une attaque d'arme en mêlée et riposte si le jet réussit."
+	_stance_parry_button.custom_minimum_size = Vector2(44, 44)
+	_stance_parry_button.add_theme_font_size_override("font_size", 20)
+	_stance_parry_button.toggle_mode = true
+	_stance_parry_button.button_group = _stance_group
+	_stance_parry_button.pressed.connect(func(): _set_active_unit_stance(CombatUnit.DefensiveStance.PARRY))
+	stance_row.add_child(_stance_parry_button)
+
+	_stance_dodge_button = Button.new()
+	_stance_dodge_button.text = "↯"
+	_stance_dodge_button.tooltip_text = "Esquive — annule n'importe quelle attaque si le jet réussit, 1 attaque sur 2 seulement."
+	_stance_dodge_button.custom_minimum_size = Vector2(44, 44)
+	_stance_dodge_button.add_theme_font_size_override("font_size", 20)
+	_stance_dodge_button.toggle_mode = true
+	_stance_dodge_button.button_group = _stance_group
+	_stance_dodge_button.pressed.connect(func(): _set_active_unit_stance(CombatUnit.DefensiveStance.DODGE))
+	stance_row.add_child(_stance_dodge_button)
+
 	var bottom_row = HBoxContainer.new()
 	bottom_row.add_theme_constant_override("separation", 8)
 	vbox.add_child(bottom_row)
 
 	_inventory_button = Button.new()
-	_inventory_button.text = "Inventaire"
-	_inventory_button.custom_minimum_size = Vector2(110, 40)
+	_inventory_button.text = "☰"
+	_inventory_button.tooltip_text = "Inventaire"
+	_inventory_button.custom_minimum_size = Vector2(44, 44)
+	_inventory_button.add_theme_font_size_override("font_size", 20)
 	_inventory_button.pressed.connect(_on_inventory_pressed)
 	bottom_row.add_child(_inventory_button)
 
 	_end_turn_button = Button.new()
-	_end_turn_button.text = "Fin de tour"
-	_end_turn_button.custom_minimum_size = Vector2(140, 40)
+	_end_turn_button.text = "➡"
+	_end_turn_button.tooltip_text = "Fin de tour"
+	_end_turn_button.custom_minimum_size = Vector2(44, 44)
+	_end_turn_button.add_theme_font_size_override("font_size", 20)
 	_end_turn_button.pressed.connect(_on_end_turn_pressed)
 	bottom_row.add_child(_end_turn_button)
 
@@ -150,6 +191,13 @@ func _build_character_panel(canvas: CanvasLayer) -> void:
 	_char_ea_label.add_theme_font_size_override("font_size", 13)
 	_char_ea_label.modulate = Color(0.8, 0.8, 0.8)
 	char_vbox.add_child(_char_ea_label)
+
+	char_vbox.add_child(HSeparator.new())
+
+	_char_stats_label = Label.new()
+	_char_stats_label.add_theme_font_size_override("font_size", 13)
+	_char_stats_label.modulate = Color(0.85, 0.85, 0.85)
+	char_vbox.add_child(_char_stats_label)
 
 	_render_character_panel()  # État initial : placeholder "aucune unité".
 
@@ -324,7 +372,7 @@ func _update_ui() -> void:
 
 	var unit = _turn_order[_current_index]
 	var team_label = "Joueur" if unit.team == CombatUnit.Team.PLAYER else "Ennemi"
-	_turn_label.text = "Tour de : %s (%s) — PM: %d | EA (réserve combat): %d" % [
+	_turn_label.text = "Tour de : %s (%s) — PM: %d | EA: %d" % [
 		unit.unit_name, team_label, unit.current_pm, unit.current_ea
 	]
 
@@ -336,6 +384,24 @@ func _update_ui() -> void:
 
 	_rebuild_spell_buttons(unit)
 	_render_character_panel()
+	_sync_stance_buttons(unit)
+
+# Applique la posture défensive choisie à l'unité actuellement active
+# (celle dont c'est le tour — seule autorisée à choisir sa posture).
+func _set_active_unit_stance(stance: int) -> void:
+	if _turn_order.is_empty():
+		return
+	var unit = _turn_order[_current_index]
+	unit.set_defensive_stance(stance)
+
+# Met les boutons de posture dans l'état correspondant à la posture
+# actuelle de l'unité (utile quand on change de tour).
+func _sync_stance_buttons(unit) -> void:
+	if unit.defensive_stance == CombatUnit.DefensiveStance.DODGE:
+		_stance_dodge_button.button_pressed = true
+	else:
+		# Par défaut (et dans tous les autres cas) : Parade.
+		_stance_parry_button.button_pressed = true
 
 # Appelée depuis HexGrid après un cast de sort, pour rafraîchir
 # l'affichage de l'EA restante sans changer de tour.
@@ -386,6 +452,7 @@ func _render_character_panel() -> void:
 		_char_hp_bar.visible = false
 		_char_hp_label.text = ""
 		_char_ea_label.text = ""
+		_char_stats_label.text = ""
 		return
 
 	var unit = _inspected_unit
@@ -400,7 +467,27 @@ func _render_character_panel() -> void:
 	_char_hp_bar.value = unit.current_hp
 	_char_hp_label.text = "PV : %d / %d" % [unit.current_hp, unit.max_hp]
 
-	_char_ea_label.text = "EA (réserve combat) : %d / %d" % [unit.current_ea, unit.max_ea]
+	_char_ea_label.text = "EA : %d / %d" % [unit.current_ea, unit.max_ea]
+
+	_char_stats_label.text = (
+		"Courage : %d\n" +
+		"Attaque : %d\n" +
+		"Parade : %d\n" +
+		"Adresse : %d\n" +
+		"Force : %d\n" +
+		"Intelligence : %d\n" +
+		"Charisme : %d\n" +
+		"Chance : %d"
+	) % [
+		unit.courage,
+		unit.attack_stat,
+		unit.parade_stat,
+		unit.adresse_stat,
+		unit.force_stat,
+		unit.intelligence_stat,
+		unit.charisme_stat,
+		unit.chance_stat,
+	]
 
 # Appelée par HexGrid quand une unité meurt (via son signal "died") :
 # on la retire de la file d'initiative et on ajuste l'index courant
@@ -455,6 +542,8 @@ func show_combat_end(result: String) -> void:
 	_clear_spell_buttons()
 	_end_turn_button.disabled = true
 	_inventory_button.disabled = true
+	_stance_parry_button.disabled = true
+	_stance_dodge_button.disabled = true
 
 	var message: String
 	var color: Color
