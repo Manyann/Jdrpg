@@ -54,10 +54,10 @@ extends Node2D
 
 ## Liste des unités joueur à faire apparaître automatiquement au
 ## lancement (une par case disponible dans la zone, dans l'ordre).
-@export var player_units: Array[String] = ["Barbare", "Haut Elfe", "Walkyrie"]
+@export var player_units: Array[String] = ["Barbare", "Elfe", "Mage"]
 
 ## Liste des unités ennemies à faire apparaître automatiquement.
-@export var enemy_units: Array[String] = ["Bouftou", "Bouftou", "Bouftou"]
+@export var enemy_units: Array[String] = ["Orc", "Orc", "Orc"]
 
 ## Courage de chaque unité joueur (même ordre que player_units).
 ## Détermine l'ordre de passage : plus haut = joue plus tôt.
@@ -120,6 +120,15 @@ var _placement_zone_cells = {}
 ## Rayon (en cases) de la zone centrale utilisée par les modes
 ## Embuscade/Défense (voir get_center_zone_cells / get_outer_zone_cells).
 @export var center_zone_radius: int = 2
+
+## Cases infranchissables (rochers, murs...) — bloquent le déplacement
+## ET la ligne de vue des sorts/attaques à distance (voir
+## has_line_of_sight). Quelques cases par défaut pour tester tout de
+## suite ; ajuste/vide selon le niveau souhaité.
+@export var obstacle_coords: Array[Vector2i] = [Vector2i(0, 0), Vector2i(1, 0), Vector2i(-1, 1)]
+
+## Couleur des cases d'obstacle.
+@export var obstacle_color: Color = Color(0.13, 0.11, 0.1, 0.95)
 
 # Sort en cours de ciblage (null si on n'est pas en train de viser).
 var _casting_spell: Spell = null
@@ -267,7 +276,15 @@ func generate_grid() -> void:
 				"occupant": null  # Contiendra une référence vers un CombatUnit une fois placé.
 			}
 
-	print("Grille générée : %d cases." % _cells.size())
+	# Marque les cases d'obstacle (rochers, murs...) comme infranchissables
+	# ET bloquant la ligne de vue (voir has_line_of_sight). Configurable
+	# depuis l'inspecteur ; quelques cases par défaut pour pouvoir tester
+	# la ligne de vue immédiatement.
+	for coord in obstacle_coords:
+		if _cells.has(coord):
+			_cells[coord]["is_walkable"] = false
+
+	print("Grille générée : %d cases (%d obstacles)." % [_cells.size(), obstacle_coords.size()])
 
 # ---------- Conversions coordonnées <-> pixels ----------
 
@@ -337,7 +354,7 @@ func hex_neighbor(coord: Vector2i, direction: int) -> Vector2i:
 func get_column_cells(q_value: int) -> Array:
 	var result: Array = []
 	for coord in _cells.keys():
-		if coord.x == q_value:
+		if coord.x == q_value and _cells[coord]["is_walkable"]:
 			result.append(coord)
 	result.sort_custom(func(a, b): return a.y < b.y)
 	return result
@@ -423,18 +440,101 @@ func get_reachable_cells(start: Vector2i, max_range: int) -> Dictionary:
 
 # ---------- Sorts / attaques ----------
 
+# Arrondit un triplet de coordonnées cubiques fractionnaires vers la
+# case hexagonale la plus proche (variante de cube_round() adaptée à
+# hex_line, qui travaille en Vector3 plutôt qu'en q/r séparés).
+func _cube_round_vec3(cube: Vector3) -> Vector3:
+	var rx = round(cube.x)
+	var ry = round(cube.y)
+	var rz = round(cube.z)
+
+	var x_diff = abs(rx - cube.x)
+	var y_diff = abs(ry - cube.y)
+	var z_diff = abs(rz - cube.z)
+
+	if x_diff > y_diff and x_diff > z_diff:
+		rx = -ry - rz
+	elif y_diff > z_diff:
+		ry = -rx - rz
+	else:
+		rz = -rx - ry
+
+	return Vector3(rx, ry, rz)
+
+# Calcule la liste des cases traversées par une ligne droite entre deux
+# cases hexagonales (inclut les deux extrémités), via interpolation en
+# coordonnées cubiques — l'algorithme standard de tracé de ligne sur
+# grille hexagonale (voir redblobgames.com/grids/hexagons/#line-drawing).
+func hex_line(a: Vector2i, b: Vector2i) -> Array:
+	var n = hex_distance(a, b)
+	if n == 0:
+		return [a]
+
+	var a_cube = Vector3(a.x, a.y, -a.x - a.y)
+	var b_cube = Vector3(b.x, b.y, -b.x - b.y)
+
+	var result: Array = []
+	for i in range(n + 1):
+		var t = float(i) / float(n)
+		var lerp_cube = a_cube.lerp(b_cube, t)
+		# Petit décalage pour éviter les cas ambigus pile sur une arête
+		# entre deux cases (évite de "sauter" une case au hasard selon
+		# les arrondis flottants).
+		lerp_cube += Vector3(1e-6, 2e-6, -3e-6)
+		var rounded = _cube_round_vec3(lerp_cube)
+		result.append(Vector2i(int(rounded.x), int(rounded.y)))
+
+	return result
+
+# Vrai si rien ne bloque la ligne droite entre deux cases (aucun
+# obstacle infranchissable sur les cases intermédiaires — les deux
+# extrémités elles-mêmes ne sont jamais prises en compte comme
+# bloquantes). Utilisé pour restreindre la portée des sorts/attaques à
+# distance à ce qui est réellement visible, pas seulement à la distance
+# à vol d'oiseau.
+func has_line_of_sight(from: Vector2i, to: Vector2i) -> bool:
+	var line = hex_line(from, to)
+
+	for i in range(1, line.size() - 1):
+		var coord = line[i]
+		if _cells.has(coord) and not _cells[coord]["is_walkable"]:
+			return false
+
+	return true
+
+# Compte le nombre d'unités (alliées ou ennemies, peu importe) présentes
+# sur les cases intermédiaires de la ligne entre deux cases (extrémités
+# exclues). Chaque unité gêne un tir/sort à distance : -1 au jet de
+# réussite par unité sur la trajectoire (voir _resolve_weapon_attack et
+# _resolve_spell_effect). Toujours 0 pour une attaque en mêlée (portée
+# 1 = aucune case intermédiaire possible).
+func count_units_in_line(from: Vector2i, to: Vector2i) -> int:
+	var line = hex_line(from, to)
+	var count = 0
+
+	for i in range(1, line.size() - 1):
+		var coord = line[i]
+		if _cells.has(coord) and _cells[coord]["occupant"] != null:
+			count += 1
+
+	return count
+
 # Renvoie toutes les cases dont la distance au centre est comprise
-# entre min_r et max_r (inclus). Distance "à vol d'oiseau" : ne prend
-# pas en compte les obstacles ni les unités (pas de ligne de vue pour
-# l'instant, ce sera une amélioration future pour les sorts à distance).
+# entre min_r et max_r (inclus) ET dont la ligne de vue depuis center
+# n'est pas bloquée par un obstacle (voir has_line_of_sight). Distance
+# de portée toujours "à vol d'oiseau" (hex_distance), mais la ligne de
+# vue, elle, est désormais vérifiée.
 func get_cells_in_range(center: Vector2i, min_r: int, max_r: int) -> Dictionary:
 	var result: Dictionary = {}
 	for coord in _cells.keys():
 		if coord == center:
 			continue
 		var dist = hex_distance(center, coord)
-		if dist >= min_r and dist <= max_r:
-			result[coord] = dist
+		if dist < min_r or dist > max_r:
+			continue
+		if not has_line_of_sight(center, coord):
+			continue
+		result[coord] = dist
 	return result
 
 # Active le mode ciblage pour le sort donné : calcule et affiche les
@@ -539,10 +639,24 @@ func _resolve_weapon_attack(caster: CombatUnit, spell: Spell, target: CombatUnit
 	caster.face_direction(target.position)
 	caster.play_animation("attack" if spell.is_melee_range() else "ranged_attack")
 
+	# Chaque unité (alliée ou ennemie) sur la trajectoire gêne le tir :
+	# -1 au jet de toucher par unité interposée. Toujours 0 en mêlée
+	# (portée 1, aucune case intermédiaire).
+	var malus = count_units_in_line(caster.hex_coord, target.hex_coord)
+
+	# La mêlée teste l'Attaque ; une attaque à distance (arc, arbalète...)
+	# teste l'Adresse à la place.
+	var base_stat = caster.attack_stat if spell.is_melee_range() else caster.adresse_stat
+	var effective_stat = base_stat - malus
+
 	var hit_roll = randi_range(1, 20)
 
-	if hit_roll >= caster.attack_stat:
-		print("%s rate son attaque (jet %d >= Attaque %d)." % [caster.unit_name, hit_roll, caster.attack_stat])
+	if hit_roll >= effective_stat:
+		print("%s rate son attaque (jet %d >= %s %d, malus -%d)." % [
+			caster.unit_name, hit_roll,
+			"Attaque" if spell.is_melee_range() else "Adresse",
+			effective_stat, malus
+		])
 		spawn_floating_text(target.position, "Raté", Color(0.65, 0.65, 0.65))
 		return
 
@@ -583,9 +697,14 @@ func _resolve_spell_effect(caster: CombatUnit, spell: Spell, target: CombatUnit)
 	else:
 		avg_stat = (caster.intelligence_stat + caster.adresse_stat) / 2.0
 
+	# Chaque unité (alliée ou ennemie) sur la trajectoire gêne le sort :
+	# -1 au jet de lancer par unité interposée.
+	var malus = count_units_in_line(caster.hex_coord, target.hex_coord)
+	avg_stat -= malus
+
 	var cast_roll = randi_range(1, 20)
 	if cast_roll >= avg_stat:
-		print("%s rate son sort %s (jet %d >= moyenne %.1f)." % [caster.unit_name, spell.spell_name, cast_roll, avg_stat])
+		print("%s rate son sort %s (jet %d >= moyenne %.1f, malus -%d)." % [caster.unit_name, spell.spell_name, cast_roll, avg_stat, malus])
 		spawn_floating_text(target.position, "Raté", Color(0.65, 0.65, 0.65))
 		return
 
@@ -729,7 +848,7 @@ func check_combat_end() -> bool:
 # une au clic via place_unit_at().
 #
 # `template_name` doit correspondre à une clé de UnitDatabase.TEMPLATES
-# (ex: "Barbare", "Haut Elfe", "Bouftou"...) : détermine les stats de
+# (ex: "Barbare", "Elfe", "Orc"...) : détermine les stats de
 # base et les sorts de l'unité. `courage_override` permet de
 # personnaliser le Courage d'une instance précise sans toucher au
 # Courage par défaut de la classe.
@@ -822,7 +941,7 @@ func get_center_zone_cells(radius: int) -> Dictionary:
 	var result: Dictionary = {}
 	var origin = Vector2i(0, 0)
 	for coord in _cells.keys():
-		if hex_distance(origin, coord) <= radius:
+		if hex_distance(origin, coord) <= radius and _cells[coord]["is_walkable"]:
 			result[coord] = true
 	return result
 
@@ -832,7 +951,7 @@ func get_outer_zone_cells(radius: int) -> Dictionary:
 	var result: Dictionary = {}
 	var origin = Vector2i(0, 0)
 	for coord in _cells.keys():
-		if hex_distance(origin, coord) > radius:
+		if hex_distance(origin, coord) > radius and _cells[coord]["is_walkable"]:
 			result[coord] = true
 	return result
 
@@ -851,6 +970,8 @@ func start_placement(unit: CombatUnit, zone_cells) -> void:
 func _handle_placement_click(coord: Vector2i) -> void:
 	if not _placement_zone_cells.has(coord) or is_occupied(coord):
 		return
+	if not _cells.has(coord) or not _cells[coord]["is_walkable"]:
+		return  # Sécurité (les zones excluent déjà les obstacles normalement).
 
 	if not place_unit_at(_pending_placement_unit, coord):
 		return
@@ -900,7 +1021,9 @@ func _draw() -> void:
 		var center = axial_to_pixel(coord)
 		var fill = fill_color
 
-		if placement_mode_active:
+		if not _cells[coord]["is_walkable"]:
+			fill = obstacle_color
+		elif placement_mode_active:
 			if _placement_zone_cells.has(coord):
 				fill = placement_zone_color
 		else:

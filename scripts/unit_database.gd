@@ -4,8 +4,7 @@ class_name UnitDatabase
 # ============================================================
 # unit_database.gd
 # Définit les stats de base, l'arme, les sorts et l'inventaire de
-# départ de chaque "classe" d'unité (Barbare, Haut Elfe, Walkyrie,
-# Bouftou...).
+# départ de chaque "classe" d'unité (Barbare, Elfe, Mage, Orc...).
 #
 # Ce dictionnaire est la source de vérité pour spawn_unit() dans
 # HexGrid. Pour ajouter une nouvelle classe, il suffit d'ajouter
@@ -43,20 +42,6 @@ const TEMPLATES: Dictionary = {
 		"inventory_weapons": [
 			{"name": "Marteau de guerre", "damage": 30, "weapon_type": "melee", "min_range": 1, "max_range": 1},
 		],
-		# Feuille de sprites 768x256 = grille 24 colonnes x 8 lignes de
-		# cases 32x32. 8 vraies orientations dessinées, une par ligne
-		# (voir DIRECTION_ROWS ci-dessous) : le découpage par colonnes
-		# (idle/marche/attaque/dégât/mort) est identique sur les 8
-		# lignes, donc build_sprite_animations() génère automatiquement
-		# les 8 variantes de chaque animation à partir de la config
-		# "action_columns" ci-dessous (pas besoin de les taper à la main).
-		#
-		# NON VÉRIFIÉ : "ranged_attack" (colonnes 9-12) et "cast"
-		# (colonnes 13-16) d'après la légende fournie — mais ces colonnes
-		# ressemblent visuellement à des portraits en gros plan plutôt
-		# qu'à une animation de tir/sort. Sans impact pour le Barbare
-		# (pas d'arme à distance), à vérifier si réutilisé ailleurs. Pas
-		# de variante directionnelle pour ces deux-là (voir "extra_animations").
 		"sprite": {
 			"path": "res://assets/sprites/Warrior-Red.png",
 			"frame_width": 32,
@@ -76,7 +61,7 @@ const TEMPLATES: Dictionary = {
 			},
 		},
 	},
-	"Haut Elfe": {
+	"Elfe": {
 		"max_hp": 45,
 		"max_pm": 3,
 		"max_ea": 6,
@@ -88,9 +73,6 @@ const TEMPLATES: Dictionary = {
 		"intelligence": 15,
 		"charisme": 11,
 		"chance": 13,
-		# Arme à distance : son "attaque d'arme" tire une flèche au lieu
-		# de frapper au contact — même règles (gratuite, 1/tour) qu'une
-		# arme de mêlée, juste une portée différente.
 		"weapon": {"name": "Arc léger", "damage": 14, "weapon_type": "ranged", "min_range": 2, "max_range": 5},
 		"spells": [
 			{"name": "Flèche Magique",   "ea_cost": 3, "min_range": 2, "max_range": 6, "damage": 18, "spell_type": "physical"},
@@ -104,7 +86,7 @@ const TEMPLATES: Dictionary = {
 		"potions": [
 			{"name": "Potion de mana", "type": "mana", "amount": 3},
 		],
-			"sprite": {
+		"sprite": {
 			"path": "res://assets/sprites/Archer-Green.png",
 			"frame_width": 32,
 			"frame_height": 32,
@@ -123,7 +105,7 @@ const TEMPLATES: Dictionary = {
 			},
 		},
 	},
-	"Walkyrie": {
+	"Mage": {
 		"max_hp": 45,
 		"max_pm": 3,
 		"max_ea": 6,
@@ -143,7 +125,8 @@ const TEMPLATES: Dictionary = {
 		],
 		"potions": [
 			{"name": "Potion de soin", "type": "heal", "amount": 20},
-		],	"sprite": {
+		],
+		"sprite": {
 			"path": "res://assets/sprites/Mage-Cyan.png",
 			"frame_width": 32,
 			"frame_height": 32,
@@ -162,7 +145,7 @@ const TEMPLATES: Dictionary = {
 			},
 		},
 	},
-	"Bouftou": {
+	"Orc": {
 		"max_hp": 50,
 		"max_pm": 3,
 		"max_ea": 6,
@@ -175,7 +158,8 @@ const TEMPLATES: Dictionary = {
 		"charisme": 4,
 		"chance": 7,
 		"weapon": {"name": "Corne", "damage": 15, "weapon_type": "melee", "min_range": 1, "max_range": 1},
-		"spells": [],	"sprite": {
+		"spells": [],
+		"sprite": {
 			"path": "res://assets/sprites/Orc-Grunt.png",
 			"frame_width": 32,
 			"frame_height": 32,
