@@ -25,9 +25,8 @@ class_name WorldMap
 
 const ZONES: Dictionary = {
 	"Plaine": {
-		"width": 800,
+		"width": 1000,
 		"height": 600,
-		"background_color": Color(0.25, 0.4, 0.22),
 		"exits": {"east": "Foret", "north": "Village"},
 		"encounter_chance": 5,
 		"encounter_table": [
@@ -36,9 +35,8 @@ const ZONES: Dictionary = {
 		],
 	},
 	"Foret": {
-		"width": 800,
+		"width": 1000,
 		"height": 600,
-		"background_color": Color(0.12, 0.25, 0.12),
 		"exits": {"west": "Plaine"},
 		"encounter_chance": 10,
 		"encounter_table": [
@@ -46,9 +44,8 @@ const ZONES: Dictionary = {
 		],
 	},
 	"Village": {
-		"width": 800,
+		"width": 1000,
 		"height": 600,
-		"background_color": Color(0.35, 0.32, 0.22),
 		"exits": {"south": "Plaine"},
 		"encounter_chance": 0,  # Zone sûre : pas de rencontres.
 		"encounter_table": [],

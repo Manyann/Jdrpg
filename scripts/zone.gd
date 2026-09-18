@@ -3,9 +3,9 @@ extends Node2D
 # ============================================================
 # zone.gd
 # Scène d'exploration : représente UNE zone bornée (façon Dofus), avec
-# déplacement libre du joueur (WASD/flèches), changement de zone en
-# touchant un bord, et un jet de rencontre unique à l'entrée dans
-# chaque zone (rester/se balader n'augmente pas les chances).
+# déplacement libre du joueur (WASD/flèches ou clic), changement de
+# zone en touchant un bord, et un jet de rencontre unique à l'entrée
+# dans chaque zone (rester/se balader n'augmente pas les chances).
 #
 # Cette MÊME scène est réutilisée pour toutes les zones : à chaque
 # changement, WorldManager met à jour la zone/position courante puis
@@ -31,15 +31,14 @@ extends Node2D
 const EDGE_MARGIN := 24.0          # Distance du bord qui déclenche une sortie de zone.
 const MOVE_SPEED := 220.0          # Pixels par seconde.
 
-## Dimensions de la zone EN CASES du TileMap (pas en pixels) pour la
-## génération procédurale du sol. Indépendant de zone_data.width/height
-## (qui restent en pixels, pour les limites de déplacement de l'avatar).
-## Assez grand pour que le losange isométrique généré dépasse largement
-## les bords de la zone dans tous les sens (mieux vaut trop que pas
-## assez : l'excédent est juste hors-champ, sans impact visuel ni
-## perf notable).
-const MAP_COLS := 40
-const MAP_ROWS := 40
+## Dimensions de la grille générée EN CASES (pas en pixels). Rectangle
+## volontairement plus large en hauteur qu'en largeur (36x80) : une
+## grille isométrique forme un LOSANGE, pas un rectangle, donc une
+## forme allongée couvre mieux un écran large et bas qu'une grille
+## carrée. Ajuste ces deux chiffres si l'avertissement de couverture
+## apparaît dans la console (voir _center_terrain_on_zone).
+const MAP_COLS := 32
+const MAP_ROWS := 75
 
 # Référence au node TileMapLayer enfant (voir instructions d'installation
 # en haut du fichier). Reste null si absent — le fond coloré uni de
@@ -78,49 +77,71 @@ func _generate_terrain() -> void:
 	if _terrain_tilemap == null:
 		return
 
-	var source_id = 0  # Suppose une seule Atlas Source dans le TileSet.
-	var grass_variants = [Vector2i(0, 2), Vector2i(1, 2), Vector2i(2, 2)]
-
+	# Important : un node enfant se dessine normalement PAR-DESSUS le
+	# contenu de _draw() de son parent (le personnage, les marqueurs de
+	# sortie...). On force le sol à rester en arrière-plan.
+	_terrain_tilemap.z_index = -1
 	_terrain_tilemap.y_sort_enabled = true
 
-	for x in range(36):
-		for y in range(80):
-			var tile_coord = grass_variants[randi() % grass_variants.size()]
-			_terrain_tilemap.set_cell(Vector2i(x, y), source_id, tile_coord)
+	var ground_tiles = _build_ground_layout()
+	_apply_tile_layout(ground_tiles)
+	_center_terrain_on_zone(ground_tiles.keys())
 
-	#_center_terrain_on_zone()
+# Construit le dictionnaire "quelles tuiles où" : clé = coordonnée de
+# case (Vector2i x, y dans la grille du TileMap), valeur = coordonnée
+# de la tuile correspondante dans l'atlas (Vector2i colonne, ligne).
+# Séparé de _apply_tile_layout() exprès : cette fonction pourra plus
+# tard être remplacée par une disposition dessinée à la main (un
+# dictionnaire écrit directement dans WorldMap, par exemple) sans
+# toucher au code qui l'affiche.
+func _build_ground_layout() -> Dictionary:
+	var layout: Dictionary = {}
+	var grass_variants = [Vector2i(0, 2), Vector2i(1, 2), Vector2i(2, 2)]
+
+	for x in range(MAP_COLS):
+		for y in range(MAP_ROWS):
+			layout[Vector2i(x, y)] = grass_variants[randi() % grass_variants.size()]
+
+	return layout
+
+# Applique un dictionnaire coordonnée -> tuile d'atlas (voir
+# _build_ground_layout) au TileMapLayer.
+func _apply_tile_layout(layout: Dictionary) -> void:
+	var source_id = 0  # Suppose une seule Atlas Source dans le TileSet.
+	for coord in layout.keys():
+		_terrain_tilemap.set_cell(coord, source_id, layout[coord])
 
 # Centre le TileMapLayer sur le rectangle de la zone. Plutôt que de
 # deviner la formule de conversion case -> pixel (qui dépend de la
 # config exacte du TileSet — forme, axe de décalage...), on demande
-# directement à Godot via map_to_local() la position réelle des 4
-# coins de la grille générée, puis on centre cette boîte englobante
-# sur le rectangle de la zone. Fiable quelle que soit la config.
-func _center_terrain_on_zone() -> void:
-	var corners = [
-		_terrain_tilemap.map_to_local(Vector2i(0, 0)),
-		_terrain_tilemap.map_to_local(Vector2i(MAP_COLS - 1, 0)),
-		_terrain_tilemap.map_to_local(Vector2i(0, MAP_ROWS - 1)),
-		_terrain_tilemap.map_to_local(Vector2i(MAP_COLS - 1, MAP_ROWS - 1)),
-	]
+# directement à Godot via map_to_local() la position réelle des cases
+# aux coins de la disposition fournie, puis on centre cette boîte
+# englobante sur le rectangle de la zone. Fiable quelle que soit la
+# config, et quelle que soit la forme du dictionnaire de cases (pas
+# besoin qu'il soit un rectangle plein).
+func _center_terrain_on_zone(coords: Array) -> void:
+	if coords.is_empty():
+		return
 
-	var min_x = corners[0].x
-	var max_x = corners[0].x
-	var min_y = corners[0].y
-	var max_y = corners[0].y
-	for c in corners:
-		min_x = min(min_x, c.x)
-		max_x = max(max_x, c.x)
-		min_y = min(min_y, c.y)
-		max_y = max(max_y, c.y)
+	var min_x = INF
+	var max_x = -INF
+	var min_y = INF
+	var max_y = -INF
 
-	var zone_w = zone_data.get("width", 800)
+	for coord in coords:
+		var p = _terrain_tilemap.map_to_local(coord)
+		min_x = min(min_x, p.x)
+		max_x = max(max_x, p.x)
+		min_y = min(min_y, p.y)
+		max_y = max(max_y, p.y)
+
+	var zone_w = zone_data.get("width", 2000)
 	var zone_h = zone_data.get("height", 600)
-	var diamond_w = max_x - min_x
-	var diamond_h = max_y - min_y
+	var layout_w = max_x - min_x
+	var layout_h = max_y - min_y
 
-	if diamond_w < zone_w or diamond_h < zone_h:
-		push_warning("zone.gd: le sol généré (%.0fx%.0f) est plus petit que la zone (%.0fx%.0f) — augmente MAP_COLS/MAP_ROWS." % [diamond_w, diamond_h, zone_w, zone_h])
+	if layout_w < zone_w or layout_h < zone_h:
+		push_warning("zone.gd: le sol généré (%.0fx%.0f) est plus petit que la zone (%.0fx%.0f) — augmente MAP_COLS/MAP_ROWS." % [layout_w, layout_h, zone_w, zone_h])
 
 	_terrain_tilemap.position = Vector2(
 		zone_w / 2.0 - (min_x + max_x) / 2.0,
@@ -161,7 +182,7 @@ func _build_ui() -> void:
 func _unhandled_input(event: InputEvent) -> void:
 	if event is InputEventMouseButton and event.pressed and event.button_index == MOUSE_BUTTON_LEFT:
 		var target = get_local_mouse_position()
-		target.x = clamp(target.x, 0, zone_data.get("width", 800))
+		target.x = clamp(target.x, 0, zone_data.get("width", 2000))
 		target.y = clamp(target.y, 0, zone_data.get("height", 600))
 		_click_target = target
 		_has_click_target = true
@@ -206,14 +227,14 @@ func _process(delta: float) -> void:
 		return  # La scène va être rechargée, pas la peine de continuer.
 
 func _clamp_to_bounds() -> void:
-	avatar_pos.x = clamp(avatar_pos.x, 0, zone_data.get("width", 800))
+	avatar_pos.x = clamp(avatar_pos.x, 0, zone_data.get("width", 2000))
 	avatar_pos.y = clamp(avatar_pos.y, 0, zone_data.get("height", 600))
 
 # Renvoie true si une transition de zone a été déclenchée (la scène va
 # être rechargée juste après).
 func _check_edge_transition() -> bool:
 	var exits = zone_data.get("exits", {})
-	var w = zone_data.get("width", 800)
+	var w = zone_data.get("width", 2000)
 	var h = zone_data.get("height", 600)
 
 	if avatar_pos.x <= EDGE_MARGIN and exits.has("west"):
@@ -237,7 +258,7 @@ func _check_edge_transition() -> bool:
 # donne l'impression de continuité entre les deux zones.
 func _travel(target_zone: String, arrival_edge: String) -> void:
 	var target_data = WorldMap.get_zone(target_zone)
-	var tw = target_data.get("width", 800)
+	var tw = target_data.get("width", 2000)
 	var th = target_data.get("height", 600)
 
 	var spawn := Vector2.ZERO
@@ -289,11 +310,11 @@ func _trigger_encounter() -> void:
 	_encounter_popup.visible = false
 
 func _draw() -> void:
-	var w = zone_data.get("width", 800)
+	var w = zone_data.get("width", 2000)
 	var h = zone_data.get("height", 600)
-	var bg_color = zone_data.get("background_color", Color(0.2, 0.2, 0.2))
 
-	draw_rect(Rect2(0, 0, w, h), bg_color)
+	# Contour de la zone (repère visuel des limites) — plus de
+	# remplissage de couleur uni, le TileMapLayer affiche le vrai décor.
 	draw_rect(Rect2(0, 0, w, h), Color.BLACK, false, 3.0)
 
 	# Marqueurs de sortie : un hexagone, même couleur pour tous, positionné
