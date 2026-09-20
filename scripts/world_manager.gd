@@ -21,6 +21,35 @@ extends Node
 var current_zone_name: String = "Plaine"
 var player_spawn_position: Vector2 = Vector2(400, 300)
 
+# État du personnage hors combat (barre en bas de l'écran, façon
+# Dofus). Initialisé une seule fois depuis UnitDatabase (voir
+# ensure_party_initialized), puis persiste tel quel entre les zones —
+# jusqu'à ce que le vrai combat soit branché et vienne le modifier.
+var party_name: String = "Barbare"
+var party_max_hp: int = 0
+var party_current_hp: int = 0
+var party_max_ea: int = 0
+var party_current_ea: int = 0
+var party_potions: Array = []
+
+var _party_initialized: bool = false
+
+# À appeler avant d'afficher la barre de statut (voir zone.gd) — ne
+# fait rien si déjà initialisé, pour ne jamais réinitialiser les PV/EA
+# du joueur à chaque changement de zone.
+func ensure_party_initialized() -> void:
+	if _party_initialized:
+		return
+
+	var stats = UnitDatabase.get_base_stats(party_name)
+	party_max_hp = stats.get("max_hp", 50)
+	party_current_hp = party_max_hp
+	party_max_ea = stats.get("max_ea", 6)
+	party_current_ea = party_max_ea
+	party_potions = UnitDatabase.build_potions(party_name)
+
+	_party_initialized = true
+
 # Renseignés juste avant de déclencher un combat (rencontre) : quels
 # ennemis affronter, et où revenir une fois le combat terminé. Pas
 # encore lus par la scène de combat (à brancher à l'étape suivante).
