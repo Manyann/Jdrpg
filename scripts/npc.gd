@@ -12,8 +12,18 @@ class_name Npc
 @export var npc_name: String = "PNJ"
 
 ## Lignes affichées une par une (E pour passer à la suivante, ou pour
-## fermer sur la dernière). Une seule ligne = dialogue simple.
-@export var dialogue_lines: Array = ["..."]
+## fermer sur la dernière). Tableau vide = pas de dialogue du tout —
+## utile pour un marchand qui ouvre sa boutique directement.
+@export var dialogue_lines: Array = []
+
+# Stock d'une boutique : liste de {"kind": "weapon"/"armor"/
+# "accessory"/"potion"/"arrow", "resource": Weapon/Armor/Accessory/
+# Potion/Arrow}. Rempli au runtime par zone.gd (_roll_merchant_stock),
+# PAS depuis les données statiques de WorldMap (le tirage dépend du
+# type de ville + d'un jet aléatoire, voir ShopGenerator.roll_stock).
+# Tableau vide = ce PNJ n'est pas un marchand. Si dialogue_lines n'est
+# pas vide, la boutique s'ouvre automatiquement à la fin du dialogue.
+var shop_stock: Array = []
 
 ## Optionnel : nom d'une classe de UnitDatabase (ex: "Barbare") pour
 ## réutiliser son sprite en pose idle statique. Laisse vide pour un

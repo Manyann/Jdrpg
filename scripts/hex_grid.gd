@@ -677,6 +677,9 @@ func _resolve_weapon_attack(caster: CombatUnit, spell: Spell, target: CombatUnit
 	if spell.is_melee_range():
 		effective_damage += caster.get_melee_damage_bonus()
 
+	# L'armure du défenseur réduit les dégâts subis (jamais sous 0).
+	effective_damage = max(0, effective_damage - target.armor_value)
+
 	target.take_damage(effective_damage)
 	spawn_floating_text(target.position, "-%d" % effective_damage, Color(0.95, 0.3, 0.3))
 
@@ -720,6 +723,9 @@ func _resolve_spell_effect(caster: CombatUnit, spell: Spell, target: CombatUnit)
 		effective_damage -= spell_bonus  # Renforce le soin (plus négatif).
 	else:
 		effective_damage += spell_bonus
+		# L'armure du défenseur réduit les dégâts subis (jamais sous 0) —
+		# ne s'applique évidemment pas à un soin.
+		effective_damage = max(0, effective_damage - target.armor_value)
 
 	target.take_damage(effective_damage)
 
@@ -769,6 +775,7 @@ func _deal_counter_attack(defender: CombatUnit, attacker: CombatUnit) -> void:
 
 	var base_damage = defender.equipped_weapon.damage if defender.equipped_weapon != null else 5
 	var counter_damage = base_damage + defender.get_melee_damage_bonus()
+	counter_damage = max(0, counter_damage - attacker.armor_value)
 
 	attacker.take_damage(counter_damage)
 	spawn_floating_text(attacker.position, "-%d (riposte)" % counter_damage, Color(0.95, 0.55, 0.2))
@@ -859,18 +866,18 @@ func build_unit(team: int, template_name: String, courage_override: int = -1) ->
 
 	var stats = UnitDatabase.get_base_stats(template_name)
 	if not stats.is_empty():
-		unit.max_hp = stats.get("max_hp", unit.max_hp)
+		unit.base_max_hp = stats.get("max_hp", unit.base_max_hp)
 		unit.max_pm = stats.get("max_pm", unit.max_pm)
-		unit.max_ea = stats.get("max_ea", unit.max_ea)
-		unit.courage = stats.get("courage", unit.courage)
+		unit.base_max_ea = stats.get("max_ea", unit.base_max_ea)
+		unit.base_courage = stats.get("courage", unit.base_courage)
 		unit.has_ambidextrie = stats.get("ambidextrie", false)
-		unit.attack_stat = stats.get("attack", unit.attack_stat)
-		unit.parade_stat = stats.get("parade", unit.parade_stat)
-		unit.adresse_stat = stats.get("adresse", unit.adresse_stat)
-		unit.force_stat = stats.get("force", unit.force_stat)
-		unit.intelligence_stat = stats.get("intelligence", unit.intelligence_stat)
-		unit.charisme_stat = stats.get("charisme", unit.charisme_stat)
-		unit.chance_stat = stats.get("chance", unit.chance_stat)
+		unit.base_attack_stat = stats.get("attack", unit.base_attack_stat)
+		unit.base_parade_stat = stats.get("parade", unit.base_parade_stat)
+		unit.base_adresse_stat = stats.get("adresse", unit.base_adresse_stat)
+		unit.base_force_stat = stats.get("force", unit.base_force_stat)
+		unit.base_intelligence_stat = stats.get("intelligence", unit.base_intelligence_stat)
+		unit.base_charisme_stat = stats.get("charisme", unit.base_charisme_stat)
+		unit.base_chance_stat = stats.get("chance", unit.base_chance_stat)
 		unit.spells = UnitDatabase.build_spells(template_name)
 		unit.equipped_weapon = UnitDatabase.build_weapon(template_name, "weapon")
 		unit.off_hand_weapon = UnitDatabase.build_weapon(template_name, "weapon_off_hand")
@@ -894,7 +901,7 @@ func build_unit(team: int, template_name: String, courage_override: int = -1) ->
 				push_warning("build_unit: sprite introuvable à '%s' pour la classe '%s' (fallback sur le disque de couleur)." % [sprite_path, template_name])
 
 	if courage_override >= 0:
-		unit.courage = courage_override
+		unit.base_courage = courage_override
 
 	return unit
 

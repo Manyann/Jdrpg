@@ -63,9 +63,30 @@ var _current_facing_suffix: String = "_s"
 # actuellement. Mise à jour par HexGrid lors du placement/déplacement.
 var hex_coord: Vector2i
 
-# Stats de base.
+# Stats de base — valeurs BRUTES de la classe (UnitDatabase), avant
+# tout bonus d'équipement. Ne changent jamais après le spawn ; les
+# stats "effectives" ci-dessous (celles réellement utilisées partout
+# ailleurs dans le code) sont recalculées à partir de ces bases +
+# l'équipement à chaque changement d'arme/armure/accessoire — voir
+# _recalculate_stats().
+var base_max_hp: int = 50
+var base_max_ea: int = 6
+var base_courage: int = 10
+var base_attack_stat: int = 12
+var base_parade_stat: int = 8
+var base_adresse_stat: int = 10
+var base_force_stat: int = 10
+var base_intelligence_stat: int = 10
+var base_charisme_stat: int = 10
+var base_chance_stat: int = 10
+
+# Stats EFFECTIVES (base + bonus d'équipement) — ce sont celles-ci que
+# le reste du code lit (jets de combat, PM, etc.). Ne pas les modifier
+# directement : elles sont écrasées à chaque appel de
+# _recalculate_stats(), déclenché automatiquement au spawn et à chaque
+# changement d'équipement.
 @export var max_hp: int = 50
-@export var max_pm: int = 3  # Points de mouvement par tour (se réinitialise chaque tour).
+@export var max_pm: int = 3  # Points de mouvement par tour (se réinitialise chaque tour) — pas affecté par l'équipement.
 @export var max_ea: int = 6  # Réserve d'Énergie Astrale pour TOUT le combat (ne se réinitialise pas).
 @export var courage: int = 10  # Détermine l'ordre de passage : plus haut = joue plus tôt.
 
@@ -96,11 +117,69 @@ var hex_coord: Vector2i
 @export var charisme_stat: int = 10
 @export var chance_stat: int = 10
 
+## Réduction de dégâts subis, entièrement issue de l'équipement (pas de
+## base : 0 sans armure). Appliquée dans HexGrid lors de la résolution
+## des dégâts (voir _resolve_weapon_attack / _resolve_spell_effect).
+var armor_value: int = 0
+
+## Armure et accessoires équipés — comme equipped_weapon/off_hand_weapon,
+## leurs bonus de stats sont appliqués via _recalculate_stats(). Un
+## personnage peut porter PLUSIEURS accessoires à la fois (anneaux,
+## collier, cape...), une seule armure.
+var equipped_armor: Armor = null
+var equipped_accessories: Array = []
+
 func get_melee_damage_bonus() -> int:
 	return max(0, force_stat - 12)
 
 func get_spell_damage_bonus() -> int:
 	return max(0, int((intelligence_stat - 12) / 2.0))
+
+# Recalcule toutes les stats EFFECTIVES à partir des stats de base
+# (base_*) + les bonus de TOUT l'équipement actuellement porté (armes,
+# armure, accessoires). À appeler à chaque changement d'équipement
+# (voir equip_weapon/equip_armor/equip_accessory/unequip_accessory) —
+# jamais besoin de modifier max_hp/attack_stat/etc. directement.
+func _recalculate_stats() -> void:
+	max_hp = base_max_hp
+	max_ea = base_max_ea
+	courage = base_courage
+	attack_stat = base_attack_stat
+	parade_stat = base_parade_stat
+	adresse_stat = base_adresse_stat
+	force_stat = base_force_stat
+	intelligence_stat = base_intelligence_stat
+	charisme_stat = base_charisme_stat
+	chance_stat = base_chance_stat
+	armor_value = 0
+
+	var equipment: Array = []
+	if equipped_weapon != null:
+		equipment.append(equipped_weapon)
+	if has_ambidextrie and off_hand_weapon != null:
+		equipment.append(off_hand_weapon)
+	if equipped_armor != null:
+		equipment.append(equipped_armor)
+	for accessory in equipped_accessories:
+		equipment.append(accessory)
+
+	for item in equipment:
+		courage += item.bonus_courage
+		intelligence_stat += item.bonus_intelligence
+		charisme_stat += item.bonus_charisme
+		adresse_stat += item.bonus_adresse
+		force_stat += item.bonus_force
+		chance_stat += item.bonus_chance
+		attack_stat += item.bonus_attaque
+		parade_stat += item.bonus_parade
+		armor_value += item.bonus_armure
+		max_hp += item.bonus_vie
+		max_ea += item.bonus_mana
+
+	# Les PV/EA courants ne doivent jamais dépasser le nouveau maximum
+	# (utile si on retire un équipement qui augmentait max_hp/max_ea).
+	current_hp = min(current_hp, max_hp)
+	current_ea = min(current_ea, max_ea)
 
 # Posture actuelle (choisie à son tour, persiste jusqu'au tour suivant).
 # Par défaut : Parade (pas de posture "Aucune").
@@ -174,6 +253,12 @@ var utility_action_slot: Spell
 signal died(unit: CombatUnit)
 
 func _ready() -> void:
+	# D'abord : les stats effectives (max_hp, max_ea, etc.) dépendent de
+	# l'équipement déjà assigné à ce stade (voir HexGrid.build_unit(),
+	# qui assigne l'équipement AVANT add_child — donc avant que _ready()
+	# ne s'exécute).
+	_recalculate_stats()
+
 	current_hp = max_hp
 	current_pm = max_pm
 	current_ea = max_ea
@@ -399,6 +484,37 @@ func equip_weapon(new_weapon: Weapon) -> bool:
 
 	equipped_weapon = new_weapon
 	spells.insert(0, equipped_weapon.create_attack_spell())
+	_recalculate_stats()
+	return true
+
+# Change l'armure équipée (une seule à la fois). Comme equip_weapon,
+# consomme l'action utilitaire du tour. Renvoie false si l'action du
+# tour n'est plus disponible.
+func equip_armor(new_armor: Armor) -> bool:
+	if not try_use_utility_action():
+		return false
+
+	equipped_armor = new_armor
+	_recalculate_stats()
+	return true
+
+# Ajoute un accessoire équipé (plusieurs possibles simultanément — pas
+# de remplacement automatique, contrairement à l'arme/l'armure).
+# Consomme l'action utilitaire du tour.
+func equip_accessory(accessory: Accessory) -> bool:
+	if not try_use_utility_action():
+		return false
+
+	equipped_accessories.append(accessory)
+	_recalculate_stats()
+	return true
+
+func unequip_accessory(accessory: Accessory) -> bool:
+	if not try_use_utility_action():
+		return false
+
+	equipped_accessories.erase(accessory)
+	_recalculate_stats()
 	return true
 
 func _draw() -> void:

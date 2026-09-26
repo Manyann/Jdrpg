@@ -14,6 +14,15 @@ enum PotionType { HEAL, MANA }
 @export var potion_name: String = "Potion de soin"
 @export var potion_type: PotionType = PotionType.HEAL
 @export var amount: int = 20
+@export var price: int = 0
+
+# Symbole compact à afficher sur un bouton/emplacement d'inventaire
+# (le texte complet reste disponible via get_display_text(), affiché
+# en tooltip au survol).
+func get_icon_text() -> String:
+	if potion_type == PotionType.HEAL:
+		return "♥"
+	return "♦"
 
 func get_display_text() -> String:
 	if potion_type == PotionType.HEAL:

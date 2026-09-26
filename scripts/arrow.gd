@@ -11,6 +11,7 @@ class_name Arrow
 
 @export var arrow_name: String = "Flèche normale"
 @export var damage_bonus: int = 0
+@export var price: int = 0
 
 ## Nombre de flèches de ce type restant en carquois. Décrémenté à
 ## chaque tir (voir TurnManager._open_arrow_popup) ; à 0, le bouton

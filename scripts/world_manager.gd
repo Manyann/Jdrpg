@@ -32,6 +32,37 @@ var party_max_ea: int = 0
 var party_current_ea: int = 0
 var party_potions: Array = []
 
+# Objets achetés (armes/armures/accessoires/flèches) — voir zone.gd,
+# ShopGenerator. Contrairement aux potions, ces objets restent dans
+# l'inventaire même une fois équipés (equipped_* n'est qu'une
+# référence vers l'un d'entre eux, pas un retrait de la liste).
+var party_weapons: Array = []
+var party_armors: Array = []
+var party_accessories: Array = []
+var party_arrows: Array = []
+
+# Équipement actuellement porté. Une seule arme et une seule armure à
+# la fois, mais plusieurs accessoires possibles simultanément.
+var party_equipped_weapon: Weapon = null
+var party_equipped_armor: Armor = null
+var party_equipped_accessories: Array = []
+
+# Monnaie du joueur. Simple var (pas besoin de passer par
+# ensure_party_initialized, elle persiste déjà naturellement tant que
+# WorldManager reste en mémoire — pas de dépendance à UnitDatabase).
+var party_gold: int = 50
+
+# Niveau et expérience — pas encore alimenté par le combat (pas encore
+# branché), mais la mécanique est prête : appelle add_experience()
+# depuis n'importe où une fois les récompenses de combat en place.
+# Niveau et expérience — pas encore alimenté par le combat (pas encore
+# branché), mais la mécanique est prête : appelle add_experience()
+# depuis n'importe où une fois les récompenses de combat en place.
+# Passer du niveau N à N+1 demande N*100 XP.
+var party_level: int = 1
+var party_current_xp: int = 0
+var party_xp_to_next_level: int = party_level * 100
+
 var _party_initialized: bool = false
 
 # À appeler avant d'afficher la barre de statut (voir zone.gd) — ne
@@ -49,6 +80,58 @@ func ensure_party_initialized() -> void:
 	party_potions = UnitDatabase.build_potions(party_name)
 
 	_party_initialized = true
+
+# Ajoute de l'expérience et gère la/les montée(s) de niveau (au cas où
+# un gros gain d'XP ferait passer plusieurs niveaux d'un coup). Passer
+# du niveau N à N+1 demande N*100 XP (100 pour 1->2, 200 pour 2->3,
+# 500 pour 5->6, etc.).
+func add_experience(amount: int) -> void:
+	party_current_xp += amount
+
+	while party_current_xp >= party_xp_to_next_level:
+		party_current_xp -= party_xp_to_next_level
+		party_level += 1
+		party_xp_to_next_level = party_level * 100
+
+func add_gold(amount: int) -> void:
+	party_gold += amount
+
+# Dépense de l'or si possible. Renvoie false (et ne change rien) si le
+# joueur n'a pas assez d'or — à toujours vérifier avant un achat.
+func spend_gold(amount: int) -> bool:
+	if party_gold < amount:
+		return false
+	party_gold -= amount
+	return true
+
+# Recalcule party_max_hp/party_max_ea à partir des stats de base de la
+# classe + les bonus PV/EA de l'équipement actuellement porté. Les
+# autres bonus (Attaque, Parade, Armure...) sont pleinement gérés côté
+# combat (voir CombatUnit._recalculate_stats) mais n'ont pas encore
+# d'affichage en exploration (aucune de ces stats n'y est montrée) —
+# seuls PV/EA sont donc répercutés ici, pour un effet visible
+# immédiat dans la barre de statut.
+func recalculate_party_bonuses() -> void:
+	var base_stats = UnitDatabase.get_base_stats(party_name)
+	var bonus_hp = 0
+	var bonus_ea = 0
+
+	var equipment: Array = []
+	if party_equipped_weapon != null:
+		equipment.append(party_equipped_weapon)
+	if party_equipped_armor != null:
+		equipment.append(party_equipped_armor)
+	for accessory in party_equipped_accessories:
+		equipment.append(accessory)
+
+	for item in equipment:
+		bonus_hp += item.bonus_vie
+		bonus_ea += item.bonus_mana
+
+	party_max_hp = base_stats.get("max_hp", 50) + bonus_hp
+	party_max_ea = base_stats.get("max_ea", 6) + bonus_ea
+	party_current_hp = min(party_current_hp, party_max_hp)
+	party_current_ea = min(party_current_ea, party_max_ea)
 
 # Renseignés juste avant de déclencher un combat (rencontre) : quels
 # ennemis affronter, et où revenir une fois le combat terminé. Pas

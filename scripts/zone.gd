@@ -69,6 +69,7 @@ var _in_dialogue: bool = false
 var _dialogue_lines: Array = []
 var _dialogue_index: int = 0
 var _dialogue_speaker: String = ""
+var _dialogue_npc: Npc = null  # Pour enchaîner sur la boutique si le PNJ en a une.
 
 # Déplacement au clic : destination visée (ignorée si aucun clic en
 # attente). Le clavier (WASD/flèches), s'il est utilisé, reprend
@@ -94,9 +95,23 @@ var _hp_bar: ProgressBar
 var _hp_label: Label
 var _ea_bar: ProgressBar
 var _ea_label: Label
-var _inventory_button: Button
-var _inventory_popup: PopupPanel
-var _inventory_list_container: VBoxContainer
+var _level_label: Label
+var _xp_bar: ProgressBar
+var _xp_label: Label
+var _gold_label: Label
+var _inventory_panel: PanelContainer
+var _inventory_tab_button: Button
+var _skills_tab_button: Button
+var _panel_content_container: VBoxContainer
+var _active_panel_tab: String = "inventory"
+
+# --- Panneau boutique (marchand) ---
+var _shop_panel: PanelContainer
+var _shop_gold_label: Label
+var _shop_items_container: VBoxContainer
+var _shop_npc: Npc = null
+var _shop_tab_buttons: Dictionary = {}
+var _shop_active_kind: String = "weapon"
 
 func _ready() -> void:
 	WorldManager.ensure_party_initialized()
@@ -115,11 +130,43 @@ func _setup_npcs() -> void:
 	for npc_data in zone_data.get("npcs", []):
 		var npc := Npc.new()
 		npc.npc_name = npc_data.get("name", "PNJ")
-		npc.dialogue_lines = npc_data.get("dialogue", ["..."])
+		npc.dialogue_lines = npc_data.get("dialogue", [])
 		npc.sprite_template = npc_data.get("sprite_template", "")
 		npc.position = npc_data.get("position", Vector2.ZERO)
 		add_child(npc)
 		_npcs.append(npc)
+
+		if npc_data.get("is_merchant", false):
+			_roll_merchant_stock(npc)
+
+# Tire le stock réel d'un marchand parmi les 5 catalogues (armes,
+# armures, accessoires, potions, flèches), selon le type de ville de
+# la zone actuelle (voir ShopGenerator.roll_stock — le handicap réduit
+# la chance de présence de chaque objet). Tiré une seule fois, au
+# chargement de la zone : rester/repartir ne retire pas le stock, il
+# faut recharger la zone pour un nouveau tirage.
+func _roll_merchant_stock(npc: Npc) -> void:
+	var settlement_type = zone_data.get("settlement_type", "bourgade")
+	var stock: Array = []
+
+	for raw in ShopGenerator.roll_stock(WeaponCatalog.get_all(), settlement_type):
+		stock.append({"kind": "weapon", "resource": ShopGenerator.build_weapon_from_data(raw)})
+
+	for raw in ShopGenerator.roll_stock(ArmorCatalog.get_all(), settlement_type):
+		stock.append({"kind": "armor", "resource": ShopGenerator.build_armor_from_data(raw)})
+
+	for raw in ShopGenerator.roll_stock(AccessoryCatalog.get_all(), settlement_type):
+		stock.append({"kind": "accessory", "resource": ShopGenerator.build_accessory_from_data(raw)})
+
+	for raw in ShopGenerator.roll_stock(PotionCatalog.get_all(), settlement_type):
+		var potion = ShopGenerator.build_potion_from_data(raw)
+		if potion != null:  # null = potion à buff temporaire, pas encore supportée.
+			stock.append({"kind": "potion", "resource": potion})
+
+	for raw in ShopGenerator.roll_stock(ArrowCatalog.get_all(), settlement_type):
+		stock.append({"kind": "arrow", "resource": ShopGenerator.build_arrow_from_data(raw)})
+
+	npc.shop_stock = stock
 
 # Crée le node ExplorerAvatar et le configure avec le sprite/les
 # animations de AVATAR_TEMPLATE (voir UnitDatabase) — réutilise donc
@@ -281,33 +328,44 @@ func _build_ui() -> void:
 	# Popup provisoire affiché quand une rencontre se déclenche — à
 	# remplacer par un vrai changement de scène vers le combat une fois
 	# le nom/chemin de cette scène connu (voir _trigger_encounter).
+	# PRESET_CENTER seul n'aligne que le coin haut-gauche du panneau sur
+	# le centre de l'écran (il continue de s'étendre vers la droite/le
+	# bas depuis ce point) — un vrai centrage passe par un CenterContainer
+	# qui enveloppe le panneau (même technique pour les 3 popups ci-dessous).
+	var encounter_center = CenterContainer.new()
+	encounter_center.set_anchors_preset(Control.PRESET_FULL_RECT)
+	encounter_center.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	canvas.add_child(encounter_center)
+
 	_encounter_popup = PanelContainer.new()
 	var style = StyleBoxFlat.new()
 	style.bg_color = Color(0.15, 0.05, 0.05, 0.95)
 	style.set_corner_radius_all(10)
 	style.set_content_margin_all(24)
 	_encounter_popup.add_theme_stylebox_override("panel", style)
-	_encounter_popup.set_anchors_preset(Control.PRESET_CENTER)
 	_encounter_popup.visible = false
-	canvas.add_child(_encounter_popup)
+	encounter_center.add_child(_encounter_popup)
 
 	_encounter_label = Label.new()
 	_encounter_label.add_theme_font_size_override("font_size", 26)
 	_encounter_popup.add_child(_encounter_label)
 
 	# Boîte de dialogue PNJ, centrée à l'écran.
+	var dialogue_center = CenterContainer.new()
+	dialogue_center.set_anchors_preset(Control.PRESET_FULL_RECT)
+	dialogue_center.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	canvas.add_child(dialogue_center)
+
 	_dialogue_popup = PanelContainer.new()
 	var dialogue_style = StyleBoxFlat.new()
 	dialogue_style.bg_color = Color(0.08, 0.08, 0.1, 0.95)
 	dialogue_style.set_corner_radius_all(10)
 	dialogue_style.set_content_margin_all(20)
 	_dialogue_popup.add_theme_stylebox_override("panel", dialogue_style)
-	_dialogue_popup.set_anchors_preset(Control.PRESET_CENTER)
-	_dialogue_popup.grow_horizontal = Control.GROW_DIRECTION_BOTH
-	_dialogue_popup.grow_vertical = Control.GROW_DIRECTION_BOTH
 	_dialogue_popup.custom_minimum_size = Vector2(420, 0)
 	_dialogue_popup.visible = false
-	canvas.add_child(_dialogue_popup)
+	dialogue_center.add_child(_dialogue_popup)
+
 
 	var dialogue_vbox = VBoxContainer.new()
 	dialogue_vbox.add_theme_constant_override("separation", 6)
@@ -329,7 +387,8 @@ func _build_ui() -> void:
 	dialogue_vbox.add_child(_dialogue_hint_label)
 
 	_build_status_bar(canvas)
-	_build_inventory_popup(canvas)
+	_build_inventory_panel(canvas)
+	_build_shop_panel(canvas)
 
 # Barre de statut fixe en bas de l'écran (façon Dofus) : nom, PV, EA,
 # bouton Inventaire. Reste affichée en permanence pendant l'exploration.
@@ -354,6 +413,24 @@ func _build_status_bar(canvas: CanvasLayer) -> void:
 	name_label.text = WorldManager.party_name
 	name_label.add_theme_font_size_override("font_size", 16)
 	hbox.add_child(name_label)
+
+	var xp_vbox = VBoxContainer.new()
+	xp_vbox.custom_minimum_size = Vector2(140, 0)
+	hbox.add_child(xp_vbox)
+
+	_level_label = Label.new()
+	_level_label.add_theme_font_size_override("font_size", 13)
+	xp_vbox.add_child(_level_label)
+
+	_xp_bar = ProgressBar.new()
+	_xp_bar.custom_minimum_size = Vector2(140, 10)
+	_xp_bar.show_percentage = false
+	_xp_bar.modulate = Color(0.6, 0.85, 1.0)  # Teinte bleutée pour la distinguer des PV/EA.
+	xp_vbox.add_child(_xp_bar)
+
+	_xp_label = Label.new()
+	_xp_label.add_theme_font_size_override("font_size", 10)
+	xp_vbox.add_child(_xp_label)
 
 	var hp_vbox = VBoxContainer.new()
 	hp_vbox.custom_minimum_size = Vector2(160, 0)
@@ -381,15 +458,19 @@ func _build_status_bar(canvas: CanvasLayer) -> void:
 	_ea_label.add_theme_font_size_override("font_size", 12)
 	ea_vbox.add_child(_ea_label)
 
-	_inventory_button = Button.new()
-	_inventory_button.text = "Inventaire"
-	_inventory_button.custom_minimum_size = Vector2(110, 40)
-	_inventory_button.pressed.connect(_on_inventory_button_pressed)
-	hbox.add_child(_inventory_button)
+	_gold_label = Label.new()
+	_gold_label.add_theme_font_size_override("font_size", 14)
+	_gold_label.modulate = Color(0.95, 0.8, 0.3)
+	hbox.add_child(_gold_label)
 
 	_refresh_status_bar()
 
 func _refresh_status_bar() -> void:
+	_level_label.text = "Niveau %d" % WorldManager.party_level
+	_xp_bar.max_value = WorldManager.party_xp_to_next_level
+	_xp_bar.value = WorldManager.party_current_xp
+	_xp_label.text = "%d / %d XP" % [WorldManager.party_current_xp, WorldManager.party_xp_to_next_level]
+
 	_hp_bar.max_value = WorldManager.party_max_hp
 	_hp_bar.value = WorldManager.party_current_hp
 	_hp_label.text = "PV : %d / %d" % [WorldManager.party_current_hp, WorldManager.party_max_hp]
@@ -398,41 +479,223 @@ func _refresh_status_bar() -> void:
 	_ea_bar.value = WorldManager.party_current_ea
 	_ea_label.text = "EA : %d / %d" % [WorldManager.party_current_ea, WorldManager.party_max_ea]
 
-func _build_inventory_popup(canvas: CanvasLayer) -> void:
-	_inventory_popup = PopupPanel.new()
-	_inventory_popup.min_size = Vector2(280, 0)
-	canvas.add_child(_inventory_popup)
+	_gold_label.text = "%d Or" % WorldManager.party_gold
 
-	var margin = MarginContainer.new()
-	margin.add_theme_constant_override("margin_left", 14)
-	margin.add_theme_constant_override("margin_top", 14)
-	margin.add_theme_constant_override("margin_right", 14)
-	margin.add_theme_constant_override("margin_bottom", 14)
-	_inventory_popup.add_child(margin)
+func _build_inventory_panel(canvas: CanvasLayer) -> void:
+	_inventory_panel = PanelContainer.new()
+	var style = StyleBoxFlat.new()
+	style.bg_color = Color(0.08, 0.08, 0.1, 0.92)
+	style.set_corner_radius_all(10)
+	style.set_content_margin_all(14)
+	_inventory_panel.add_theme_stylebox_override("panel", style)
 
-	_inventory_list_container = VBoxContainer.new()
-	_inventory_list_container.add_theme_constant_override("separation", 8)
-	margin.add_child(_inventory_list_container)
+	# Panneau toujours visible (pas de bouton pour l'ouvrir/fermer).
+	_inventory_panel.set_anchors_preset(Control.PRESET_BOTTOM_RIGHT)
+	_inventory_panel.position = Vector2(-16, -16)
+	_inventory_panel.grow_horizontal = Control.GROW_DIRECTION_BEGIN
+	_inventory_panel.grow_vertical = Control.GROW_DIRECTION_BEGIN
+	_inventory_panel.custom_minimum_size = Vector2(220, 0)
+	canvas.add_child(_inventory_panel)
 
-func _on_inventory_button_pressed() -> void:
-	for child in _inventory_list_container.get_children():
+	var vbox = VBoxContainer.new()
+	vbox.add_theme_constant_override("separation", 6)
+	_inventory_panel.add_child(vbox)
+
+	# Deux onglets (icônes) : cliquer dessus ne rouvre PAS un nouveau
+	# panneau, ça change juste le contenu affiché dans _panel_content_container.
+	var tabs_row = HBoxContainer.new()
+	tabs_row.add_theme_constant_override("separation", 6)
+	vbox.add_child(tabs_row)
+
+	var tab_group = ButtonGroup.new()
+
+	_inventory_tab_button = Button.new()
+	_inventory_tab_button.text = "☰"
+	_inventory_tab_button.tooltip_text = "Inventaire"
+	_inventory_tab_button.toggle_mode = true
+	_inventory_tab_button.button_group = tab_group
+	_inventory_tab_button.button_pressed = true  # Actif par défaut.
+	_inventory_tab_button.custom_minimum_size = Vector2(44, 36)
+	_inventory_tab_button.pressed.connect(func(): _switch_panel_tab("inventory"))
+	tabs_row.add_child(_inventory_tab_button)
+
+	_skills_tab_button = Button.new()
+	_skills_tab_button.text = "★"
+	_skills_tab_button.tooltip_text = "Compétences / Sorts"
+	_skills_tab_button.toggle_mode = true
+	_skills_tab_button.button_group = tab_group
+	_skills_tab_button.custom_minimum_size = Vector2(44, 36)
+	_skills_tab_button.pressed.connect(func(): _switch_panel_tab("skills"))
+	tabs_row.add_child(_skills_tab_button)
+
+	_panel_content_container = VBoxContainer.new()
+	_panel_content_container.add_theme_constant_override("separation", 4)
+	vbox.add_child(_panel_content_container)
+
+	_active_panel_tab = "inventory"
+	_refresh_panel_content()
+
+# Change l'onglet actif SANS ouvrir de nouveau panneau : rafraîchit
+# juste le contenu de celui déjà affiché.
+func _switch_panel_tab(tab_name: String) -> void:
+	_active_panel_tab = tab_name
+	_refresh_panel_content()
+
+func _refresh_panel_content() -> void:
+	for child in _panel_content_container.get_children():
 		child.queue_free()
 
-	if WorldManager.party_potions.is_empty():
+	if _active_panel_tab == "inventory":
+		_populate_inventory_tab()
+	else:
+		_populate_skills_tab()
+
+func _populate_inventory_tab() -> void:
+	var has_any = (
+		not WorldManager.party_potions.is_empty()
+		or not WorldManager.party_weapons.is_empty()
+		or not WorldManager.party_armors.is_empty()
+		or not WorldManager.party_accessories.is_empty()
+	)
+
+	if not has_any:
 		var empty_label = Label.new()
 		empty_label.text = "Inventaire vide."
-		_inventory_list_container.add_child(empty_label)
-	else:
+		_panel_content_container.add_child(empty_label)
+		return
+
+	if not WorldManager.party_potions.is_empty():
+		var hint = Label.new()
+		hint.text = "Potions (double-clic pour utiliser) :"
+		hint.add_theme_font_size_override("font_size", 12)
+		hint.modulate = Color(0.75, 0.75, 0.75)
+		_panel_content_container.add_child(hint)
+
+		var potions_row = HBoxContainer.new()
+		potions_row.add_theme_constant_override("separation", 4)
+		_panel_content_container.add_child(potions_row)
+
 		for potion in WorldManager.party_potions:
-			var btn = Button.new()
-			btn.text = potion.get_display_text()
-			btn.pressed.connect(func(): _use_potion(potion))
-			_inventory_list_container.add_child(btn)
+			var slot = Button.new()
+			slot.text = potion.get_icon_text()
+			slot.tooltip_text = potion.get_display_text()
+			slot.custom_minimum_size = Vector2(44, 44)
+			slot.add_theme_font_size_override("font_size", 20)
+			# Pas de "pressed" connecté : un simple clic ne fait rien, seul
+			# le double-clic (détecté via gui_input) consomme l'objet.
+			slot.gui_input.connect(func(event): _on_item_slot_input(event, potion))
+			potions_row.add_child(slot)
 
-	_inventory_popup.popup_centered()
+	if not WorldManager.party_weapons.is_empty():
+		_add_equip_section_label("Armes (clic pour équiper) :")
+		for weapon in WorldManager.party_weapons:
+			var is_equipped = weapon == WorldManager.party_equipped_weapon
+			_panel_content_container.add_child(_build_equip_row(
+				weapon.get_display_text(), is_equipped,
+				func(): _equip_from_inventory("weapon", weapon)
+			))
 
-# Boit une potion depuis la barre de statut : contrairement au combat,
-# pas de notion d'action/tour ici — l'effet s'applique immédiatement.
+	if not WorldManager.party_armors.is_empty():
+		_add_equip_section_label("Armures (clic pour équiper) :")
+		for armor in WorldManager.party_armors:
+			var is_equipped = armor == WorldManager.party_equipped_armor
+			_panel_content_container.add_child(_build_equip_row(
+				armor.get_display_text(), is_equipped,
+				func(): _equip_from_inventory("armor", armor)
+			))
+
+	if not WorldManager.party_accessories.is_empty():
+		_add_equip_section_label("Accessoires (clic pour équiper/retirer) :")
+		for accessory in WorldManager.party_accessories:
+			var is_equipped = WorldManager.party_equipped_accessories.has(accessory)
+			_panel_content_container.add_child(_build_equip_row(
+				accessory.get_display_text(), is_equipped,
+				func(): _equip_from_inventory("accessory", accessory)
+			))
+
+func _add_equip_section_label(text: String) -> void:
+	var label = Label.new()
+	label.text = text
+	label.add_theme_font_size_override("font_size", 12)
+	label.modulate = Color(0.75, 0.75, 0.75)
+	_panel_content_container.add_child(label)
+
+# Construit une ligne "nom de l'objet | bouton Équiper/Équipé". Les
+# accessoires utilisent le même bouton comme bascule équiper/retirer
+# (voir _equip_from_inventory) puisque plusieurs peuvent être portés
+# à la fois, contrairement à l'arme/l'armure.
+func _build_equip_row(text: String, is_equipped: bool, callback: Callable) -> Control:
+	var row = HBoxContainer.new()
+	row.add_theme_constant_override("separation", 8)
+
+	var label = Label.new()
+	label.text = text
+	label.custom_minimum_size = Vector2(150, 0)
+	label.autowrap_mode = TextServer.AUTOWRAP_WORD
+	row.add_child(label)
+
+	var button = Button.new()
+	button.text = "Équipé" if is_equipped else "Équiper"
+	button.custom_minimum_size = Vector2(70, 0)
+	button.pressed.connect(callback)
+	row.add_child(button)
+
+	return row
+
+# Équipe (ou, pour un accessoire déjà porté, retire) l'objet indiqué,
+# puis recalcule les bonus PV/EA reflétés dans la barre de statut (voir
+# WorldManager.recalculate_party_bonuses — les autres stats, Attaque/
+# Parade/Armure/etc., sont gérées côté combat via CombatUnit, pas
+# encore affichées en exploration).
+func _equip_from_inventory(kind: String, item) -> void:
+	match kind:
+		"weapon":
+			WorldManager.party_equipped_weapon = item
+		"armor":
+			WorldManager.party_equipped_armor = item
+		"accessory":
+			if WorldManager.party_equipped_accessories.has(item):
+				WorldManager.party_equipped_accessories.erase(item)
+			else:
+				WorldManager.party_equipped_accessories.append(item)
+
+	WorldManager.recalculate_party_bonuses()
+	_refresh_status_bar()
+	_refresh_panel_content()
+
+# Affiche les sorts/attaques du personnage — pour l'instant en simple
+# consultation (grisés), hors combat il n'y a pas encore d'action à
+# leur associer. Réutilise directement UnitDatabase, comme pour le
+# reste (sprite de l'avatar, potions de départ...).
+func _populate_skills_tab() -> void:
+	var spells = UnitDatabase.build_spells(WorldManager.party_name)
+	var weapon = UnitDatabase.build_weapon(WorldManager.party_name, "weapon")
+
+	if weapon != null:
+		spells.push_front(weapon.create_attack_spell())
+
+	if spells.is_empty():
+		var empty_label = Label.new()
+		empty_label.text = "Aucune compétence."
+		_panel_content_container.add_child(empty_label)
+		return
+
+	for spell in spells:
+		var slot = Button.new()
+		slot.text = spell.get_icon_text()
+		slot.tooltip_text = spell.get_display_text()
+		slot.custom_minimum_size = Vector2(0, 36)
+		slot.disabled = true  # Consultation seulement pour l'instant, hors combat.
+		_panel_content_container.add_child(slot)
+
+func _on_item_slot_input(event: InputEvent, potion) -> void:
+	if event is InputEventMouseButton and event.pressed and event.double_click and event.button_index == MOUSE_BUTTON_LEFT:
+		_use_potion(potion)
+
+# Boit une potion depuis l'inventaire (double-clic) : contrairement au
+# combat, pas de notion d'action/tour ici — l'effet s'applique
+# immédiatement. Le panneau reste ouvert (pas de fermeture automatique)
+# pour pouvoir enchaîner plusieurs objets facilement.
 func _use_potion(potion) -> void:
 	if potion.potion_type == Potion.PotionType.HEAL:
 		WorldManager.party_current_hp = min(WorldManager.party_current_hp + potion.amount, WorldManager.party_max_hp)
@@ -441,7 +704,7 @@ func _use_potion(potion) -> void:
 
 	WorldManager.party_potions.erase(potion)
 	_refresh_status_bar()
-	_inventory_popup.hide()
+	_refresh_panel_content()
 
 func _unhandled_input(event: InputEvent) -> void:
 	if event is InputEventKey and event.pressed and not event.echo and event.keycode == KEY_E:
@@ -449,8 +712,13 @@ func _unhandled_input(event: InputEvent) -> void:
 			return
 		if _in_dialogue:
 			_advance_dialogue()
+		elif _shop_panel.visible:
+			_close_shop()
 		elif _nearby_npc != null:
-			_start_dialogue(_nearby_npc)
+			if not _nearby_npc.dialogue_lines.is_empty():
+				_start_dialogue(_nearby_npc)
+			elif not _nearby_npc.shop_stock.is_empty():
+				_open_shop(_nearby_npc)
 		return
 
 	if event is InputEventMouseButton and event.pressed and event.button_index == MOUSE_BUTTON_LEFT:
@@ -465,8 +733,8 @@ func _unhandled_input(event: InputEvent) -> void:
 func _process(delta: float) -> void:
 	_update_nearby_npc()
 
-	if _encounter_popup.visible or _in_dialogue:
-		return  # On ne bouge pas pendant un popup de rencontre ou un dialogue.
+	if _encounter_popup.visible or _in_dialogue or _shop_panel.visible:
+		return  # On ne bouge pas pendant un popup/dialogue/boutique.
 
 	var movement = Vector2.ZERO
 
@@ -652,6 +920,7 @@ func _update_nearby_npc() -> void:
 
 func _start_dialogue(npc: Npc) -> void:
 	_in_dialogue = true
+	_dialogue_npc = npc
 	_dialogue_speaker = npc.npc_name
 	_dialogue_lines = npc.dialogue_lines
 	_dialogue_index = 0
@@ -669,12 +938,213 @@ func _end_dialogue() -> void:
 	_in_dialogue = false
 	_dialogue_popup.visible = false
 
+	# Enchaîne sur la boutique si ce PNJ en a une (ex: la marchande dit
+	# bonjour, puis sa boutique s'ouvre automatiquement).
+	if _dialogue_npc != null and not _dialogue_npc.shop_stock.is_empty():
+		_open_shop(_dialogue_npc)
+
+	_dialogue_npc = null
+
 func _refresh_dialogue_display() -> void:
 	_dialogue_name_label.text = _dialogue_speaker
 	_dialogue_text_label.text = _dialogue_lines[_dialogue_index]
 
 	var is_last = _dialogue_index >= _dialogue_lines.size() - 1
 	_dialogue_hint_label.text = "[E] Fermer" if is_last else "[E] Continuer"
+
+# ---------- Boutique (marchand) ----------
+
+# Ordre des onglets et leur icône/libellé. Mêmes symboles que ceux
+# déjà utilisés ailleurs dans le jeu (⚔ attaque, ♥ soin, ➤ tir à
+# distance) pour rester cohérent visuellement.
+const SHOP_KIND_ORDER := ["weapon", "armor", "accessory", "potion", "arrow"]
+const SHOP_KIND_INFO := {
+	"weapon":    {"icon": "⚔", "label": "Armes"},
+	"armor":     {"icon": "⛨", "label": "Armures"},
+	"accessory": {"icon": "○", "label": "Accessoires"},
+	"potion":    {"icon": "♥", "label": "Potions"},
+	"arrow":     {"icon": "➤", "label": "Flèches"},
+}
+
+func _build_shop_panel(canvas: CanvasLayer) -> void:
+	# PRESET_CENTER seul n'aligne que le coin haut-gauche du panneau sur
+	# le centre de l'écran (il continue de s'étendre vers la droite/le
+	# bas depuis ce point) — un vrai centrage passe par un CenterContainer
+	# qui enveloppe le panneau.
+	var center_container = CenterContainer.new()
+	center_container.set_anchors_preset(Control.PRESET_FULL_RECT)
+	center_container.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	canvas.add_child(center_container)
+
+	_shop_panel = PanelContainer.new()
+	var style = StyleBoxFlat.new()
+	style.bg_color = Color(0.1, 0.08, 0.05, 0.96)
+	style.set_corner_radius_all(10)
+	style.set_content_margin_all(18)
+	_shop_panel.add_theme_stylebox_override("panel", style)
+	_shop_panel.custom_minimum_size = Vector2(480, 0)
+	_shop_panel.visible = false
+	center_container.add_child(_shop_panel)
+
+	var vbox = VBoxContainer.new()
+	vbox.add_theme_constant_override("separation", 10)
+	_shop_panel.add_child(vbox)
+
+	# En-tête : titre à gauche, or à droite, sur la même ligne (plus
+	# compact que l'un sous l'autre).
+	var header_row = HBoxContainer.new()
+	vbox.add_child(header_row)
+
+	var title = Label.new()
+	title.text = "Boutique"
+	title.add_theme_font_size_override("font_size", 18)
+	header_row.add_child(title)
+
+	var header_spacer = Control.new()
+	header_spacer.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	header_row.add_child(header_spacer)
+
+	_shop_gold_label = Label.new()
+	_shop_gold_label.add_theme_font_size_override("font_size", 15)
+	_shop_gold_label.modulate = Color(0.95, 0.8, 0.3)
+	header_row.add_child(_shop_gold_label)
+
+	# Onglets de catégorie (façon Hôtel de Ventes) : une icône par
+	# rayon, cliquer filtre la liste sans ouvrir de nouveau panneau.
+	var tabs_row = HBoxContainer.new()
+	tabs_row.add_theme_constant_override("separation", 6)
+	vbox.add_child(tabs_row)
+
+	var tab_group = ButtonGroup.new()
+	for kind in SHOP_KIND_ORDER:
+		var info = SHOP_KIND_INFO[kind]
+		var tab_button = Button.new()
+		tab_button.text = info["icon"]
+		tab_button.tooltip_text = info["label"]
+		tab_button.toggle_mode = true
+		tab_button.button_group = tab_group
+		tab_button.custom_minimum_size = Vector2(44, 40)
+		tab_button.add_theme_font_size_override("font_size", 18)
+		tab_button.button_pressed = (kind == _shop_active_kind)
+		tab_button.pressed.connect(func(): _switch_shop_tab(kind))
+		tabs_row.add_child(tab_button)
+		_shop_tab_buttons[kind] = tab_button
+
+	# Liste de la catégorie active — hauteur fixe avec défilement, une
+	# seule catégorie affichée à la fois donc rarement besoin de scroller.
+	var scroll = ScrollContainer.new()
+	scroll.custom_minimum_size = Vector2(0, 320)
+	vbox.add_child(scroll)
+
+	_shop_items_container = VBoxContainer.new()
+	_shop_items_container.add_theme_constant_override("separation", 2)
+	_shop_items_container.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	scroll.add_child(_shop_items_container)
+
+	var close_button = Button.new()
+	close_button.text = "Fermer [E]"
+	close_button.custom_minimum_size = Vector2(0, 36)
+	close_button.pressed.connect(_close_shop)
+	vbox.add_child(close_button)
+
+func _open_shop(npc: Npc) -> void:
+	_shop_npc = npc
+	_shop_active_kind = "weapon"
+	if _shop_tab_buttons.has("weapon"):
+		_shop_tab_buttons["weapon"].button_pressed = true
+	_shop_panel.visible = true
+	_refresh_shop_panel()
+
+func _close_shop() -> void:
+	_shop_panel.visible = false
+	_shop_npc = null
+
+# Change l'onglet actif SANS ouvrir de nouveau panneau : rafraîchit
+# juste la liste affichée, comme pour l'inventaire.
+func _switch_shop_tab(kind: String) -> void:
+	_shop_active_kind = kind
+	_refresh_shop_panel()
+
+func _refresh_shop_panel() -> void:
+	for child in _shop_items_container.get_children():
+		child.queue_free()
+
+	_shop_gold_label.text = "%d Or" % WorldManager.party_gold
+
+	if _shop_npc == null:
+		return
+
+	var entries = _shop_npc.shop_stock.filter(func(e): return e["kind"] == _shop_active_kind)
+
+	if entries.is_empty():
+		var empty_label = Label.new()
+		empty_label.text = "Rien en stock dans cette catégorie aujourd'hui."
+		empty_label.modulate = Color(0.7, 0.7, 0.7)
+		_shop_items_container.add_child(empty_label)
+		return
+
+	for i in range(entries.size()):
+		var entry = entries[i]
+		var resource = entry["resource"]
+
+		# Bande alternée (une ligne sur deux légèrement plus claire) pour
+		# faciliter la lecture d'une longue liste, façon Hôtel de Ventes.
+		var row_panel = PanelContainer.new()
+		if i % 2 == 0:
+			var row_style = StyleBoxFlat.new()
+			row_style.bg_color = Color(1, 1, 1, 0.04)
+			row_style.set_content_margin_all(6)
+			row_panel.add_theme_stylebox_override("panel", row_style)
+		else:
+			var empty_style = StyleBoxFlat.new()
+			empty_style.bg_color = Color(0, 0, 0, 0)
+			empty_style.set_content_margin_all(6)
+			row_panel.add_theme_stylebox_override("panel", empty_style)
+		_shop_items_container.add_child(row_panel)
+
+		var row = HBoxContainer.new()
+		row.add_theme_constant_override("separation", 10)
+		row_panel.add_child(row)
+
+		var label = Label.new()
+		label.text = resource.get_display_text()
+		label.custom_minimum_size = Vector2(330, 0)
+		label.autowrap_mode = TextServer.AUTOWRAP_WORD
+		row.add_child(label)
+
+		var price_spacer = Control.new()
+		price_spacer.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+		row.add_child(price_spacer)
+
+		var price = resource.price
+		var buy_button = Button.new()
+		buy_button.text = "%d Or" % price
+		buy_button.custom_minimum_size = Vector2(80, 32)
+		buy_button.disabled = WorldManager.party_gold < price
+		buy_button.pressed.connect(func(): _buy_shop_entry(entry))
+		row.add_child(buy_button)
+
+func _buy_shop_entry(entry: Dictionary) -> void:
+	var resource = entry["resource"]
+	var price = resource.price
+	if not WorldManager.spend_gold(price):
+		return  # Pas assez d'or (ne devrait pas arriver, le bouton est grisé, sécurité en plus).
+
+	match entry["kind"]:
+		"weapon":
+			WorldManager.party_weapons.append(resource)
+		"armor":
+			WorldManager.party_armors.append(resource)
+		"accessory":
+			WorldManager.party_accessories.append(resource)
+		"potion":
+			WorldManager.party_potions.append(resource)
+		"arrow":
+			WorldManager.party_arrows.append(resource)
+
+	_refresh_status_bar()
+	_refresh_shop_panel()
+	_refresh_panel_content()  # Pour que l'onglet Inventaire se mette à jour s'il est affiché.
 
 func _draw() -> void:
 	var w = zone_data.get("width", 800)

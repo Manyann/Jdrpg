@@ -63,6 +63,9 @@ const ZONES: Dictionary = {
 		"height": 600,
 		"background_color": Color(0.35, 0.32, 0.22),
 		"exits": {"south": "Plaine"},
+		# Type de ville (voir ShopGenerator.SETTLEMENT_TYPES) : détermine
+		# le handicap appliqué au stock de ses marchands.
+		"settlement_type": "bourgade",
 		"encounter_chance": 0,  # Zone sûre : pas de rencontres.
 		"encounter_table": [],
 		"npcs": [
@@ -74,6 +77,19 @@ const ZONES: Dictionary = {
 					"Prends garde en Forêt : les Orcs y rôdent en nombre.",
 					"Reviens me voir si tu as besoin de conseils.",
 				],
+			},
+			{
+				"name": "Marchande",
+				"position": Vector2(550, 250),
+				"dialogue": [
+					"Bienvenue dans ma boutique !",
+					"Jette un œil à ce que j'ai en stock.",
+				],
+				# Vraie marchande : son stock est tiré au hasard parmi les
+				# 5 catalogues (armes/armures/accessoires/potions/flèches)
+				# selon le type de ville — voir ShopGenerator.roll_stock()
+				# dans zone.gd, _roll_merchant_stock().
+				"is_merchant": true,
 			},
 		],
 	},
