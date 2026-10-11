@@ -1,11 +1,11 @@
 [gd_scene format=3 uid="uid://8pebii2y8vfk"]
 
-[ext_resource type="Script" uid="uid://bujjfkffgdj2i" path="res://scripts/zone.gd" id="1_l4lvs"]
-[ext_resource type="Texture2D" uid="uid://vrhu5w11jigg" path="res://assets/tiles/spritesheet.png" id="2_ue2ak"]
+[ext_resource type="Script" uid="uid://bujjfkffgdj2i" path="res://scripts/zone.gd" id="1_qxmtb"]
+[ext_resource type="Texture2D" uid="uid://vrhu5w11jigg" path="res://assets/tiles/spritesheet.png" id="2_vqdlh"]
 
 [sub_resource type="TileSetAtlasSource" id="TileSetAtlasSource_2upi6"]
 resource_name = "TileSet"
-texture = ExtResource("2_ue2ak")
+texture = ExtResource("2_vqdlh")
 texture_region_size = Vector2i(32, 32)
 0:0/0 = 0
 1:0/0 = 0
@@ -439,7 +439,7 @@ tile_size = Vector2i(32, 16)
 sources/0 = SubResource("TileSetAtlasSource_2upi6")
 
 [node name="Zone" type="Node2D" unique_id=1456846519]
-script = ExtResource("1_l4lvs")
+script = ExtResource("1_qxmtb")
 
-[node name="TerrainTileMap" type="TileMapLayer" parent="." unique_id=518812825]
+[node name="TerrainTileMap" type="TileMapLayer" parent="." unique_id=1249409833]
 tile_set = SubResource("TileSet_bq1vm")

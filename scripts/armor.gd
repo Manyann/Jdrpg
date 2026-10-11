@@ -23,6 +23,7 @@ class_name Armor
 @export var bonus_attaque: int = 0
 @export var bonus_parade: int = 0
 @export var bonus_armure: int = 0
+@export var bonus_armure_magique: int = 0
 @export var bonus_vie: int = 0
 @export var bonus_mana: int = 0
 
@@ -39,7 +40,7 @@ func _describe_bonuses() -> Array:
 		"bonus_charisme": "Charisme", "bonus_adresse": "Adresse",
 		"bonus_force": "Force", "bonus_chance": "Chance",
 		"bonus_attaque": "Attaque", "bonus_parade": "Parade",
-		"bonus_armure": "Armure", "bonus_vie": "PV", "bonus_mana": "EA",
+		"bonus_armure": "Armure", "bonus_armure_magique": "Armure magique", "bonus_vie": "PV", "bonus_mana": "EA",
 	}
 	for field in labels.keys():
 		var val = get(field)

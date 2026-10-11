@@ -119,19 +119,150 @@ func _build_ui() -> void:
 func start_placement_phase(hex_grid) -> void:
 	_hex_grid = hex_grid
 	_build_unit_queues()
-	_mode_panel.visible = true
+
+	# Tour de l'infini : pas de choix de configuration ; les ennemis se
+	# placent seuls (ils sont pilotés par l'IA) et la zone du joueur
+	# s'adapte à la taille de son équipe.
+	if TowerManager.run_active:
+		_start_tower_placement()
+		return
+
+	# Rencontre d'exploration : le mode a déjà été tiré au sort (voir
+	# WorldManager.start_encounter_combat), on le lance directement sans
+	# montrer l'écran de choix.
+	if WorldManager.combat_from_encounter and WorldManager.forced_placement_mode != "":
+		var forced_mode = Mode.AMBUSH if WorldManager.forced_placement_mode == "ambush" else Mode.CLASSIC
+		_on_mode_chosen(forced_mode)
+	else:
+		_mode_panel.visible = true
 
 func _build_unit_queues() -> void:
 	_player_queue.clear()
 	_enemy_queue.clear()
 
+	# Tour de l'infini : les aventuriers vivants de l'équipe, contre les
+	# ennemis de l'étage (HexGrid._ready a rempli enemy_units).
+	if TowerManager.run_active:
+		for unit in _hex_grid._build_tower_units():
+			_player_queue.append(unit)
+		for enemy_name in _hex_grid.enemy_units:
+			_enemy_queue.append(_hex_grid._build_tower_enemy(enemy_name, TowerManager.current_floor))
+		_number_duplicate_names(_enemy_queue)
+		return
+
+	# Combat de test (PAS une rencontre d'exploration) : 6 unités
+	# VRAIMENT distinctes, race/métier tirés au sort et vérifiés (voir
+	# HexGrid._build_random_race_metier_unit) — ignore complètement
+	# player_units/enemy_units (anciens noms de gabarit fixes,
+	# "Barbare"/"Elfe"/"Mage" vs "Orc"×3).
+	if not WorldManager.combat_from_encounter:
+		for i in range(3):
+			var courage = _hex_grid.player_courage[i] if i < _hex_grid.player_courage.size() else -1
+			_player_queue.append(_hex_grid._build_random_race_metier_unit(CombatUnit.Team.PLAYER, courage))
+		for i in range(3):
+			var courage = _hex_grid.enemy_courage[i] if i < _hex_grid.enemy_courage.size() else -1
+			_enemy_queue.append(_hex_grid._build_random_race_metier_unit(CombatUnit.Team.ENEMY, courage))
+		return
+
+	# Rencontre d'exploration (comportement inchangé) : le vrai
+	# personnage du joueur, avec son équipement RÉELLEMENT acheté/
+	# équipé (pas celui par défaut d'une classe), contre les vrais
+	# ennemis tirés dans la zone (voir enemy_units, déjà réécrit par
+	# HexGrid._ready() dans ce cas).
 	for i in range(_hex_grid.player_units.size()):
 		var courage = _hex_grid.player_courage[i] if i < _hex_grid.player_courage.size() else -1
-		_player_queue.append(_hex_grid.build_unit(CombatUnit.Team.PLAYER, _hex_grid.player_units[i], courage))
+		var unit = _hex_grid.build_unit(CombatUnit.Team.PLAYER, _hex_grid.player_units[i], courage)
+
+		# L'unité du joueur doit porter son équipement RÉELLEMENT
+		# acheté/équipé, pas celui par défaut de sa classe. Appliqué
+		# AVANT que l'unité n'entre dans l'arbre de scène (build_unit()
+		# ne fait pas encore add_child) : _recalculate_stats() tournera
+		# avec le bon équipement dès _ready().
+		if WorldManager.party_equipped_weapon != null:
+			unit.equipped_weapon = WorldManager.party_equipped_weapon
+		if WorldManager.party_equipped_armor != null:
+			unit.equipped_armor = WorldManager.party_equipped_armor
+		unit.equipped_accessories = WorldManager.party_equipped_accessories.duplicate()
+		unit.equipped_race = RaceDatabase.build(WorldManager.party_race_name)
+		unit.equipped_metier = MetierDatabase.build(WorldManager.party_metier_short_code)
+		unit.level = WorldManager.party_level
+		unit.pretre_order = WorldManager.party_pretre_order
+
+		_player_queue.append(unit)
 
 	for i in range(_hex_grid.enemy_units.size()):
 		var courage = _hex_grid.enemy_courage[i] if i < _hex_grid.enemy_courage.size() else -1
 		_enemy_queue.append(_hex_grid.build_unit(CombatUnit.Team.ENEMY, _hex_grid.enemy_units[i], courage))
+
+# Deux "Gobelin" sur le même étage deviennent "Gobelin 1" et "Gobelin 2" :
+# sans ça, impossible de savoir lequel est lequel dans la file de tours.
+func _number_duplicate_names(units: Array) -> void:
+	var totals: Dictionary = {}
+	for unit in units:
+		totals[unit.unit_name] = int(totals.get(unit.unit_name, 0)) + 1
+	var seen: Dictionary = {}
+	for unit in units:
+		if int(totals[unit.unit_name]) > 1:
+			var n: int = int(seen.get(unit.unit_name, 0)) + 1
+			seen[unit.unit_name] = n
+			unit.unit_name = "%s %d" % [unit.unit_name, n]
+
+# Cases de départ d'un camp, en partant de SON bord de la grille : colonne
+# par colonne vers le centre, jusqu'à en avoir assez pour `needed` unités
+# (la zone classique ne fait qu'une colonne, soit 5 cases : trop peu pour
+# une équipe de 16 aventuriers). `side` vaut -1 (joueur, à gauche) ou 1
+# (ennemis, à droite) ; `excluded` : cases déjà prises par l'autre camp.
+func _collect_zone(side: int, needed: int, excluded: Array) -> Array:
+	var cells: Array = []
+	var q: int = side * _hex_grid.grid_radius
+	while absi(q) <= _hex_grid.grid_radius and cells.size() < needed:
+		for coord in _hex_grid.get_column_cells(q):
+			if not excluded.has(coord):
+				cells.append(coord)
+		q -= side  # Vers le centre.
+	return cells
+
+# Placement de la Tour : les ennemis sont posés au hasard dans leur zone
+# (colonnes de droite), puis le joueur pose les siens dans les colonnes de
+# gauche — à la main un par un, ou automatiquement (voir
+# TowerManager.AUTO_PLACE_PLAYER_UNITS).
+func _start_tower_placement() -> void:
+	var enemy_zone: Array
+	var player_zone: Array
+	if TowerFloors.get_floor_mode(TowerManager.current_floor) == "ambush":
+		# Mode « ambush » de l'étage : les AVENTURIERS au centre, les ennemis autour.
+		player_zone = _hex_grid.get_center_zone_cells(_hex_grid.center_zone_radius).keys()
+		enemy_zone = _hex_grid.get_outer_zone_cells(_hex_grid.center_zone_radius).keys()
+		var by_position := func(a, b): return a.x < b.x or (a.x == b.x and a.y < b.y)
+		enemy_zone.sort_custom(by_position)
+		player_zone.sort_custom(by_position)
+	else:
+		enemy_zone = _collect_zone(1, _enemy_queue.size(), [])
+		player_zone = _collect_zone(-1, _player_queue.size(), enemy_zone)
+
+	var enemy_cells: Array = enemy_zone.duplicate()
+	enemy_cells.shuffle()
+	for i in range(_enemy_queue.size()):
+		if i < enemy_cells.size():
+			_hex_grid.place_unit_at(_enemy_queue[i], enemy_cells[i])
+		else:
+			push_warning("PlacementManager: pas assez de cases pour placer %s." % _enemy_queue[i].unit_name)
+
+	if TowerManager.AUTO_PLACE_PLAYER_UNITS:
+		for i in range(_player_queue.size()):
+			if i < player_zone.size() and _hex_grid.place_unit_at(_player_queue[i], player_zone[i]):
+				TowerManager.apply_carried_state(_player_queue[i])
+			else:
+				push_warning("PlacementManager: pas assez de cases pour placer %s." % _player_queue[i].unit_name)
+		_finish_placement()
+		return
+
+	_plan = []
+	for unit in _player_queue:
+		_plan.append({"unit": unit, "zone": player_zone})
+	_plan_index = 0
+	_status_panel.visible = true
+	_advance_plan()
 
 func _on_mode_chosen(mode: int) -> void:
 	if _hex_grid == null:

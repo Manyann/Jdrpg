@@ -83,8 +83,6 @@ var _has_click_target: bool = false
 var _was_moving: bool = false
 
 var _zone_label: Label
-var _encounter_popup: PanelContainer
-var _encounter_label: Label
 var _dialogue_popup: PanelContainer
 var _dialogue_name_label: Label
 var _dialogue_text_label: Label
@@ -325,30 +323,10 @@ func _build_ui() -> void:
 	_zone_label.add_theme_font_size_override("font_size", 20)
 	margin.add_child(_zone_label)
 
-	# Popup provisoire affiché quand une rencontre se déclenche — à
-	# remplacer par un vrai changement de scène vers le combat une fois
-	# le nom/chemin de cette scène connu (voir _trigger_encounter).
 	# PRESET_CENTER seul n'aligne que le coin haut-gauche du panneau sur
 	# le centre de l'écran (il continue de s'étendre vers la droite/le
 	# bas depuis ce point) — un vrai centrage passe par un CenterContainer
-	# qui enveloppe le panneau (même technique pour les 3 popups ci-dessous).
-	var encounter_center = CenterContainer.new()
-	encounter_center.set_anchors_preset(Control.PRESET_FULL_RECT)
-	encounter_center.mouse_filter = Control.MOUSE_FILTER_IGNORE
-	canvas.add_child(encounter_center)
-
-	_encounter_popup = PanelContainer.new()
-	var style = StyleBoxFlat.new()
-	style.bg_color = Color(0.15, 0.05, 0.05, 0.95)
-	style.set_corner_radius_all(10)
-	style.set_content_margin_all(24)
-	_encounter_popup.add_theme_stylebox_override("panel", style)
-	_encounter_popup.visible = false
-	encounter_center.add_child(_encounter_popup)
-
-	_encounter_label = Label.new()
-	_encounter_label.add_theme_font_size_override("font_size", 26)
-	_encounter_popup.add_child(_encounter_label)
+	# qui enveloppe le panneau (même technique pour les popups ci-dessous).
 
 	# Boîte de dialogue PNJ, centrée à l'écran.
 	var dialogue_center = CenterContainer.new()
@@ -708,8 +686,6 @@ func _use_potion(potion) -> void:
 
 func _unhandled_input(event: InputEvent) -> void:
 	if event is InputEventKey and event.pressed and not event.echo and event.keycode == KEY_E:
-		if _encounter_popup.visible:
-			return
 		if _in_dialogue:
 			_advance_dialogue()
 		elif _shop_panel.visible:
@@ -733,8 +709,8 @@ func _unhandled_input(event: InputEvent) -> void:
 func _process(delta: float) -> void:
 	_update_nearby_npc()
 
-	if _encounter_popup.visible or _in_dialogue or _shop_panel.visible:
-		return  # On ne bouge pas pendant un popup/dialogue/boutique.
+	if _in_dialogue or _shop_panel.visible:
+		return  # On ne bouge pas pendant un dialogue/boutique.
 
 	var movement = Vector2.ZERO
 
@@ -883,22 +859,9 @@ func _trigger_encounter() -> void:
 		return
 
 	var enemies = table[randi() % table.size()]
-
-	# Préparé pour la scène de combat, pas encore lu par elle.
-	WorldManager.pending_encounter_enemies = enemies
-	WorldManager.return_zone_name = WorldManager.current_zone_name
-	WorldManager.return_position = avatar.position
-
 	print("Rencontre déclenchée ! Ennemis : %s" % str(enemies))
 
-	# TODO : remplacer ce popup par le vrai changement de scène une fois
-	# le chemin de la scène de combat connu, par exemple :
-	# get_tree().change_scene_to_file("res://scenes/combat.tscn")
-	_encounter_label.text = "Combat !\n%s" % ", ".join(enemies)
-	_encounter_popup.visible = true
-
-	await get_tree().create_timer(1.5).timeout
-	_encounter_popup.visible = false
+	WorldManager.start_encounter_combat(enemies, WorldManager.current_zone_name, avatar.position)
 
 # Trouve le PNJ le plus proche à portée d'interaction (ou null), et
 # stocke le résultat dans _nearby_npc pour l'invite affichée dans

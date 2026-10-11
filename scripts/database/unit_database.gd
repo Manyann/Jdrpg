@@ -49,15 +49,13 @@ const TEMPLATES: Dictionary = {
 			"scale": 2.0,
 			"y_offset": 15,
 			"action_columns": {
-				"idle":   {"start_col": 0,  "frame_count": 1, "fps": 6.0,  "loop": false},
-				"walk":   {"start_col": 2,  "frame_count": 2, "fps": 8.0,  "loop": true},
-				"attack": {"start_col": 4,  "frame_count": 4, "fps": 10.0, "loop": false},
-				"hurt":   {"start_col": 19, "frame_count": 1, "fps": 6.0,  "loop": false},
-				"death":  {"start_col": 22, "frame_count": 1, "fps": 4.0,  "loop": false},
-			},
-			"extra_animations": {
-				"ranged_attack": {"row": 0, "start_col": 8,  "frame_count": 4, "fps": 10.0, "loop": false},
-				"cast":          {"row": 0, "start_col": 12, "frame_count": 4, "fps": 10.0, "loop": false},
+				"idle":          {"start_col": 0,  "frame_count": 1, "fps": 6.0,  "loop": false},
+				"walk":          {"start_col": 2,  "frame_count": 2, "fps": 8.0,  "loop": true},
+				"attack":        {"start_col": 4,  "frame_count": 4, "fps": 10.0, "loop": false},
+				"ranged_attack": {"start_col": 8,  "frame_count": 4, "fps": 10.0, "loop": false},
+				"cast":          {"start_col": 12, "frame_count": 4, "fps": 10.0, "loop": false},
+				"hurt":          {"start_col": 19, "frame_count": 1, "fps": 6.0,  "loop": false},
+				"death":         {"start_col": 22, "frame_count": 1, "fps": 4.0,  "loop": false},
 			},
 		},
 	},
@@ -93,15 +91,13 @@ const TEMPLATES: Dictionary = {
 			"scale": 2.0,
 			"y_offset": 15,
 			"action_columns": {
-				"idle":   {"start_col": 0,  "frame_count": 1, "fps": 6.0,  "loop": false},
-				"walk":   {"start_col": 2,  "frame_count": 2, "fps": 8.0,  "loop": true},
-				"attack": {"start_col": 4,  "frame_count": 4, "fps": 10.0, "loop": false},
-				"hurt":   {"start_col": 19, "frame_count": 1, "fps": 6.0,  "loop": false},
-				"death":  {"start_col": 22, "frame_count": 1, "fps": 4.0,  "loop": false},
-			},
-			"extra_animations": {
-				"ranged_attack": {"row": 0, "start_col": 8,  "frame_count": 4, "fps": 10.0, "loop": false},
-				"cast":          {"row": 0, "start_col": 12, "frame_count": 4, "fps": 10.0, "loop": false},
+				"idle":          {"start_col": 0,  "frame_count": 1, "fps": 6.0,  "loop": false},
+				"walk":          {"start_col": 2,  "frame_count": 2, "fps": 8.0,  "loop": true},
+				"attack":        {"start_col": 4,  "frame_count": 4, "fps": 10.0, "loop": false},
+				"ranged_attack": {"start_col": 8,  "frame_count": 4, "fps": 10.0, "loop": false},
+				"cast":          {"start_col": 12, "frame_count": 4, "fps": 10.0, "loop": false},
+				"hurt":          {"start_col": 19, "frame_count": 1, "fps": 6.0,  "loop": false},
+				"death":         {"start_col": 22, "frame_count": 1, "fps": 4.0,  "loop": false},
 			},
 		},
 	},
@@ -133,15 +129,13 @@ const TEMPLATES: Dictionary = {
 			"scale": 2.0,
 			"y_offset": 15,
 			"action_columns": {
-				"idle":   {"start_col": 0,  "frame_count": 1, "fps": 6.0,  "loop": false},
-				"walk":   {"start_col": 2,  "frame_count": 2, "fps": 8.0,  "loop": true},
-				"attack": {"start_col": 4,  "frame_count": 4, "fps": 10.0, "loop": false},
-				"hurt":   {"start_col": 19, "frame_count": 1, "fps": 6.0,  "loop": false},
-				"death":  {"start_col": 22, "frame_count": 1, "fps": 4.0,  "loop": false},
-			},
-			"extra_animations": {
-				"ranged_attack": {"row": 0, "start_col": 8,  "frame_count": 4, "fps": 10.0, "loop": false},
-				"cast":          {"row": 0, "start_col": 12, "frame_count": 4, "fps": 10.0, "loop": false},
+				"idle":          {"start_col": 0,  "frame_count": 1, "fps": 6.0,  "loop": false},
+				"walk":          {"start_col": 2,  "frame_count": 2, "fps": 8.0,  "loop": true},
+				"attack":        {"start_col": 4,  "frame_count": 4, "fps": 10.0, "loop": false},
+				"ranged_attack": {"start_col": 8,  "frame_count": 4, "fps": 10.0, "loop": false},
+				"cast":          {"start_col": 12, "frame_count": 4, "fps": 10.0, "loop": false},
+				"hurt":          {"start_col": 19, "frame_count": 1, "fps": 6.0,  "loop": false},
+				"death":         {"start_col": 22, "frame_count": 1, "fps": 4.0,  "loop": false},
 			},
 		},
 	},
@@ -166,15 +160,13 @@ const TEMPLATES: Dictionary = {
 			"scale": 2.0,
 			"y_offset": 15,
 			"action_columns": {
-				"idle":   {"start_col": 0,  "frame_count": 1, "fps": 6.0,  "loop": false},
-				"walk":   {"start_col": 2,  "frame_count": 2, "fps": 8.0,  "loop": true},
-				"attack": {"start_col": 4,  "frame_count": 4, "fps": 10.0, "loop": false},
-				"hurt":   {"start_col": 19, "frame_count": 1, "fps": 6.0,  "loop": false},
-				"death":  {"start_col": 22, "frame_count": 1, "fps": 4.0,  "loop": false},
-			},
-			"extra_animations": {
-				"ranged_attack": {"row": 0, "start_col": 8,  "frame_count": 4, "fps": 10.0, "loop": false},
-				"cast":          {"row": 0, "start_col": 12, "frame_count": 4, "fps": 10.0, "loop": false},
+				"idle":          {"start_col": 0,  "frame_count": 1, "fps": 6.0,  "loop": false},
+				"walk":          {"start_col": 2,  "frame_count": 2, "fps": 8.0,  "loop": true},
+				"attack":        {"start_col": 4,  "frame_count": 4, "fps": 10.0, "loop": false},
+				"ranged_attack": {"start_col": 8,  "frame_count": 4, "fps": 10.0, "loop": false},
+				"cast":          {"start_col": 12, "frame_count": 4, "fps": 10.0, "loop": false},
+				"hurt":          {"start_col": 19, "frame_count": 1, "fps": 6.0,  "loop": false},
+				"death":         {"start_col": 22, "frame_count": 1, "fps": 4.0,  "loop": false},
 			},
 		},
 	},
@@ -189,9 +181,36 @@ const DIRECTION_ROWS: Dictionary = {
 }
 
 # Renvoie les stats de base d'une classe (dictionnaire vide si inconnue).
-static func get_base_stats(template_name: String) -> Dictionary:
+# Gabarit d'une classe ou d'un ennemi : TEMPLATES d'abord, puis les ennemis
+# de la Tour (TowerData.ENEMIES, fichier GÉNÉRÉ par build_tower_data.py à
+# partir des tableaux d'ennemis). Même format dans les deux cas. Renvoie {}
+# si le nom est inconnu.
+static func _find_template(template_name: String) -> Dictionary:
 	if TEMPLATES.has(template_name):
 		return TEMPLATES[template_name]
+	var enemy_table: Dictionary = {}
+	if TowerPoc.ENABLED and TowerPoc.ENEMIES.has(template_name):
+		enemy_table = TowerPoc.ENEMIES
+	elif TowerData.ENEMIES.has(template_name):
+		enemy_table = TowerData.ENEMIES
+	if not enemy_table.is_empty():
+		var enemy: Dictionary = enemy_table[template_name]
+		# "sprite_from" : l'ennemi réutilise le sprite d'un gabarit existant
+		# (ex: "Orc") tant qu'il n'a pas le sien. Résolu ici, à la demande,
+		# plutôt que dans TowerData : les deux fichiers ne se référencent
+		# pas mutuellement.
+		var source: String = str(enemy.get("sprite_from", ""))
+		if not enemy.has("sprite") and TEMPLATES.has(source) and TEMPLATES[source].has("sprite"):
+			var resolved: Dictionary = enemy.duplicate()
+			resolved["sprite"] = TEMPLATES[source]["sprite"]
+			return resolved
+		return enemy
+	return {}
+
+static func get_base_stats(template_name: String) -> Dictionary:
+	var template := _find_template(template_name)
+	if not template.is_empty():
+		return template
 	push_warning("UnitDatabase: classe inconnue '%s'." % template_name)
 	return {}
 
@@ -201,17 +220,40 @@ static func get_base_stats(template_name: String) -> Dictionary:
 static func build_spells(template_name: String) -> Array:
 	var spells: Array = []
 
-	if not TEMPLATES.has(template_name):
+	# Le Mage a son propre catalogue complet (75 sorts, voir
+	# mage_spell_catalog.gd) — bien plus riche que ce que le format
+	# TEMPLATES générique ci-dessous peut exprimer (dés composés, DI,
+	# effets à durée, invocations...). Court-circuite le reste de la
+	# fonction pour cette classe précise.
+	if template_name == "Mage":
+		return MageSpellCatalog.build_all()
+
+	if _find_template(template_name).is_empty():
 		return spells
 
-	for spell_data in TEMPLATES[template_name]["spells"]:
+	for spell_data in _find_template(template_name)["spells"]:
 		var s := Spell.new()
 		s.spell_name = spell_data["name"]
 		s.ea_cost = spell_data["ea_cost"]
 		s.min_range = spell_data["min_range"]
 		s.max_range = spell_data["max_range"]
 		s.damage = spell_data["damage"]
+		s.is_heal = s.damage < 0  # Comportement historique : préservé pour toutes les classes existantes.
 		s.spell_type = Spell.SpellType.PSYCHIC if spell_data.get("spell_type", "physical") == "psychic" else Spell.SpellType.PHYSICAL
+
+		# Par défaut : un soin (dégâts négatifs) cible un allié (soi-même
+		# inclus), un sort offensif cible un ennemi — correspond au
+		# comportement de toutes les classes actuelles. "target_mode" peut
+		# être précisé explicitement dans TEMPLATES pour les cas
+		# particuliers (self/group/zone/ally/enemy).
+		s.target_mode = Spell.TargetMode.SINGLE_ALLY if s.damage < 0 else Spell.TargetMode.SINGLE_ENEMY
+		match spell_data.get("target_mode", ""):
+			"self": s.target_mode = Spell.TargetMode.SELF
+			"group": s.target_mode = Spell.TargetMode.GROUP
+			"zone": s.target_mode = Spell.TargetMode.ZONE
+			"ally": s.target_mode = Spell.TargetMode.SINGLE_ALLY
+			"enemy": s.target_mode = Spell.TargetMode.SINGLE_ENEMY
+
 		spells.append(s)
 
 	return spells
@@ -221,10 +263,10 @@ static func build_spells(template_name: String) -> Array:
 # uniquement si l'unité a l'Ambidextrie). Renvoie null si la classe
 # n'a pas d'entrée pour cette clé (ex: pas d'arme secondaire définie).
 static func build_weapon(template_name: String, key: String = "weapon") -> Weapon:
-	if not TEMPLATES.has(template_name):
+	if _find_template(template_name).is_empty():
 		return null
 
-	var weapon_data = TEMPLATES[template_name].get(key, null)
+	var weapon_data = _find_template(template_name).get(key, null)
 	if weapon_data == null:
 		return null
 
@@ -234,6 +276,8 @@ static func build_weapon(template_name: String, key: String = "weapon") -> Weapo
 	w.weapon_type = Weapon.WeaponType.RANGED if weapon_data.get("weapon_type", "melee") == "ranged" else Weapon.WeaponType.MELEE
 	w.min_range = weapon_data.get("min_range", 1)
 	w.max_range = weapon_data.get("max_range", 1)
+	w.dice_count = weapon_data.get("dice_count", 0)
+	w.dice_modifier = weapon_data.get("dice_modifier", 0)
 	return w
 
 # Construit la liste de Resources Arrow (munitions) de cette classe.
@@ -242,10 +286,10 @@ static func build_weapon(template_name: String, key: String = "weapon") -> Weapo
 static func build_arrows(template_name: String) -> Array:
 	var arrows: Array = []
 
-	if not TEMPLATES.has(template_name):
+	if _find_template(template_name).is_empty():
 		return arrows
 
-	for arrow_data in TEMPLATES[template_name].get("arrows", []):
+	for arrow_data in _find_template(template_name).get("arrows", []):
 		var a := Arrow.new()
 		a.arrow_name = arrow_data["name"]
 		a.damage_bonus = arrow_data.get("damage_bonus", 0)
@@ -259,10 +303,10 @@ static func build_arrows(template_name: String) -> Array:
 static func build_potions(template_name: String) -> Array:
 	var potions: Array = []
 
-	if not TEMPLATES.has(template_name):
+	if _find_template(template_name).is_empty():
 		return potions
 
-	for potion_data in TEMPLATES[template_name].get("potions", []):
+	for potion_data in _find_template(template_name).get("potions", []):
 		var p := Potion.new()
 		p.potion_name = potion_data["name"]
 		p.potion_type = Potion.PotionType.MANA if potion_data.get("type", "heal") == "mana" else Potion.PotionType.HEAL
@@ -276,10 +320,10 @@ static func build_potions(template_name: String) -> Array:
 static func build_inventory_weapons(template_name: String) -> Array:
 	var weapons: Array = []
 
-	if not TEMPLATES.has(template_name):
+	if _find_template(template_name).is_empty():
 		return weapons
 
-	for weapon_data in TEMPLATES[template_name].get("inventory_weapons", []):
+	for weapon_data in _find_template(template_name).get("inventory_weapons", []):
 		var w := Weapon.new()
 		w.weapon_name = weapon_data.get("name", "Arme")
 		w.damage = weapon_data.get("damage", 10)

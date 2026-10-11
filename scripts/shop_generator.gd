@@ -48,7 +48,8 @@ static func roll_stock(catalog: Array, settlement_type: String) -> Array:
 static func build_weapon_from_data(data: Dictionary) -> Weapon:
 	var w := Weapon.new()
 	w.weapon_name = data.get("name", "Arme")
-	w.damage = data.get("damage", 0)
+	w.dice_count = data.get("dice_count", 0)
+	w.dice_modifier = data.get("dice_modifier", 0)
 	w.weapon_type = Weapon.WeaponType.RANGED if data.get("weapon_type", "melee") == "ranged" else Weapon.WeaponType.MELEE
 	w.price = data.get("price", 0)
 	w.info_text = data.get("info", "")

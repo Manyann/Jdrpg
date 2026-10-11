@@ -26,6 +26,11 @@ enum DefensiveStance { NONE, PARRY, DODGE }
 @export var player_color: Color = Color(0.25, 0.55, 0.95)
 @export var enemy_color: Color = Color(0.9, 0.25, 0.25)
 
+## Couleur de repli personnalisée (utilisée à la place de player_color/
+## enemy_color si alpha > 0) — sert aux invocations, qui n'ont pas de
+## sprite dédié mais méritent une couleur propre (voir Spell.summon_color).
+var custom_fallback_color: Color = Color(0, 0, 0, 0)
+
 # ---------- Sprite (optionnel) ----------
 # Si sprite_sheet est renseigné (voir UnitDatabase, clé "sprite"), un
 # vrai sprite animé remplace le disque de couleur. Sinon, fallback sur
@@ -86,7 +91,13 @@ var base_chance_stat: int = 10
 # _recalculate_stats(), déclenché automatiquement au spawn et à chaque
 # changement d'équipement.
 @export var max_hp: int = 50
-@export var max_pm: int = 3  # Points de mouvement par tour (se réinitialise chaque tour) — pas affecté par l'équipement.
+## Points de mouvement par tour (se réinitialise chaque tour). Comme
+## les autres stats, base_max_pm est la valeur brute (classe), max_pm
+## la valeur EFFECTIVE recalculée (base + compétences — voir Déplacement
+## silencieux/DS dans _recalculate_stats). L'équipement n'affecte pas
+## le PM pour l'instant.
+var base_max_pm: int = 3
+@export var max_pm: int = 3
 @export var max_ea: int = 6  # Réserve d'Énergie Astrale pour TOUT le combat (ne se réinitialise pas).
 @export var courage: int = 10  # Détermine l'ordre de passage : plus haut = joue plus tôt.
 
@@ -117,17 +128,211 @@ var base_chance_stat: int = 10
 @export var charisme_stat: int = 10
 @export var chance_stat: int = 10
 
-## Réduction de dégâts subis, entièrement issue de l'équipement (pas de
-## base : 0 sans armure). Appliquée dans HexGrid lors de la résolution
-## des dégâts (voir _resolve_weapon_attack / _resolve_spell_effect).
+## Réduction de dégâts subis, entièrement issue de l'équipement/des
+## effets actifs (pas de base : 0 sans rien). Appliquée dans HexGrid
+## lors de la résolution des dégâts. armor_value réduit les dégâts
+## PHYSIQUES (PH, attaques d'arme) ; magic_armor_value réduit les
+## dégâts PSYCHIQUES (PS) — voir lexique Mage. Un sort "brut" ignore
+## les deux (voir Spell.ignores_armor).
 var armor_value: int = 0
+var magic_armor_value: int = 0
 
 ## Armure et accessoires équipés — comme equipped_weapon/off_hand_weapon,
 ## leurs bonus de stats sont appliqués via _recalculate_stats(). Un
 ## personnage peut porter PLUSIEURS accessoires à la fois (anneaux,
 ## collier, cape...), une seule armure.
 var equipped_armor: Armor = null
+
+## Pièces d'armure portées EN PLUS de equipped_armor : les 5 emplacements
+## (casque, plastron, brassières, jambières, bottes) et le bouclier d'un
+## aventurier de la Tour (voir TowerManager / EquipmentRules). Leurs bonus
+## (PR compris) comptent comme ceux de equipped_armor.
+var equipped_armor_pieces: Array = []
+
+## Filière de métiers EXACTE de l'unité, du métier équipé (index 0) vers
+## ses ancêtres, en codes courts — renseignée pour les aventuriers de la
+## Tour, qui ont choisi chacune de leurs évolutions. Vide = on remonte
+## parent_codes[0] (suffisant quand un métier n'a qu'un parent ; faux pour
+## un métier à parents multiples comme l'Archange).
+var forced_metier_chain: Array = []
 var equipped_accessories: Array = []
+
+## Race (voir race.gd/RaceDatabase) — choisie INDÉPENDAMMENT de la
+## classe. Ses bonus (bonus_vie/bonus_mana/bonus_attaque/bonus_parade)
+## sont appliqués via _recalculate_stats(), au même titre que
+## l'équipement.
+var equipped_race: Race = null
+
+## Métier/classe (voir metier.gd/MetierDatabase — Guerrier, Mage,
+## Voleur, Prêtre... NE PAS confondre avec Race). Mêmes bonus_*
+## appliqués via _recalculate_stats(). Ses codes de compétences
+## (inherited_skill_codes) comptent au même titre que ceux de la race
+## dans has_skill().
+var equipped_metier: Metier = null
+
+## TOUTE la lignée de métiers du personnage (ex: Ménestrel ->
+## [Menestrel, Barde]) — pas juste equipped_metier (le dernier/le plus
+## spécialisé). "Un personnage a une race et PLUSIEURS classes" :
+## c'est cette liste qui porte cette idée explicitement, construite
+## une fois par _apply_metier_lineage() à partir de
+## equipped_metier.parent_codes. Les sorts de CHAQUE métier de cette
+## liste sont accordés (voir plus bas dans _ready()) — pas seulement
+## ceux du dernier. Les drapeaux grants_* restent fusionnés directement
+## sur equipped_metier (voir _apply_metier_lineage) pour que le reste
+## du code (HexGrid compris) continue de le consulter sans changement.
+var equipped_metiers: Array = []
+
+## Effets actifs (buffs/debuffs/DoT à durée — voir status_effect.gd).
+## Leurs bonus de stats sont aussi appliqués via _recalculate_stats(),
+## au même titre que l'équipement.
+var active_effects: Array = []
+
+## Nombre de tours restants où cette unité ne peut PAS agir du tout
+## (Mistral, Marchand de sable — voir Spell.stun_turns) : décompté et
+## son tour automatiquement passé dans TurnManager._start_current_turn,
+## comme une canalisation mais sans rien se déclencher à la fin.
+var stunned_turns_remaining: int = 0
+
+## Ces trois-là ne sont PAS des var libres : ils sont recalculés à
+## chaque appel de _recalculate_stats() à partir de active_effects
+## (voir StatusEffect.grants_untargetable/grants_invulnerable/
+## grants_frozen) — ne jamais les modifier directement, ajouter/retirer
+## l'effet correspondant à la place.
+## Provocation (Méca Tanker) : tant qu'au moins une unité provocatrice vivante
+## est visible, les ennemis dirigés par l'IA ne peuvent viser qu'elles
+## (voir EnemyAI._get_targets). Posé directement, jamais retiré : l'unité
+## cesse de provoquer en mourant.
+var is_taunting: bool = false
+
+## Doigt d'honneur (Gladiateur) : celui qui nous a provoqués, et le nombre de
+## NOS tours pendant lesquels nous ne pouvons viser que lui. forced_target_now
+## est fixé par EnemyAI au début de chaque tour (null = pas de contrainte).
+var taunt_source = null
+var taunt_turns_remaining: int = 0
+var forced_target_now = null
+
+var is_untargetable: bool = false  # Invisibilité : les ENNEMIS ne peuvent plus la cibler (alliés si).
+var is_invulnerable: bool = false  # Intangibilité/Cryogénisation : ignore tout dégât entrant.
+var is_frozen: bool = false        # Cryogénisation : ne peut plus se déplacer (voir Zone de mouvement dans HexGrid).
+
+## Compétence passive de race/classe (voir Erèbe) — aucune classe ne
+## l'a pour l'instant, à activer manuellement si besoin plus tard.
+var has_nyctalopie: bool = false
+
+## Sort en cours de canalisation (DI > 0 — voir Spell.cast_delay), ou
+## null si aucun. Tant que non-null, l'unité ne peut pas agir
+## normalement : son tour se limite à faire avancer la canalisation
+## (voir TurnManager._start_current_turn). La cible/zone n'est PAS
+## choisie au lancer : elle l'est au dernier tour de canalisation (voir
+## HexGrid.begin_delayed_targeting) — pending_targets ne sert donc
+## plus qu'aux sorts SELF/GROUP/BATTLEFIELD, recalculés à la volée
+## par HexGrid.resolve_pending_spell (pas besoin de les stocker ici).
+var pending_spell: Spell = null
+var pending_turns_remaining: int = 0
+
+func start_channeling(spell: Spell) -> void:
+	pending_spell = spell
+	pending_turns_remaining = spell.cast_delay
+
+func clear_channeling() -> void:
+	pending_spell = null
+	pending_turns_remaining = 0
+
+# Ajoute un effet actif et recalcule immédiatement les stats (pour
+# qu'un buff/debuff soit effectif dès son application, pas seulement
+# au tour suivant).
+# Renvoie vrai si l'effet a bien été appliqué, faux s'il a été
+# résisté (voir Empoisonneur, "Immunisé" — 1/2 chance d'ignorer un
+# effet POISON entrant). Le bool de retour est facultatif à exploiter :
+# ignoré sans erreur par tout appelant qui n'en a pas besoin.
+func add_status_effect(effect: StatusEffect) -> bool:
+	if effect.is_poison and equipped_metier != null and equipped_metier.grants_empoisonneur_immunity and randf() < 0.5:
+		print("%s est immunisé contre un effet de poison (Empoisonneur)." % unit_name)
+		return false
+
+	active_effects.append(effect)
+	_recalculate_stats()
+
+	# Ambidextrie accordée en cours de combat (voir Gantelets du
+	# Berserk) : le sort d'attaque de la main secondaire n'est ajouté
+	# qu'UNE FOIS à la création de l'unité (voir _ready()) — s'il
+	# manque encore à ce stade, on l'ajoute maintenant.
+	if has_ambidextrie and off_hand_weapon != null:
+		var off_hand_spell_name = off_hand_weapon.create_attack_spell().spell_name
+		var already_has_it = false
+		for s in spells:
+			if s.is_weapon_attack and s.spell_name == off_hand_spell_name:
+				already_has_it = true
+				break
+		if not already_has_it:
+			spells.insert(1, off_hand_weapon.create_attack_spell())
+
+	return true
+
+func remove_status_effect(effect: StatusEffect) -> void:
+	active_effects.erase(effect)
+	_recalculate_stats()
+
+# À appeler au tout début du tour de cette unité (voir TurnManager),
+# AVANT qu'elle puisse agir : applique les dégâts de DoT (Brûlure...),
+# gère les effets à déclenchement probabiliste (Épée de Damocles...),
+# décrémente les durées, retire les effets expirés. Les dégâts de DoT
+# sont toujours "bruts" (ignorent toute armure), cohérent avec la
+# définition de Brûlure.
+# À appeler au tout début du tour de cette unité (voir TurnManager),
+# AVANT qu'elle puisse agir : applique les dégâts de DoT (Brûlure...),
+# gère les effets à déclenchement probabiliste (Épée de Damocles...),
+# décrémente les durées, retire les effets expirés. Les dégâts de DoT
+# sont toujours "bruts" (ignorent toute armure), cohérent avec la
+# définition de Brûlure.
+#
+# Renvoie la liste des dégâts à AFFICHER ({amount, label}, un par tick)
+# — cette fonction n'a pas accès à HexGrid.spawn_floating_text(), c'est
+# donc à l'appelant (TurnManager) de les afficher.
+func process_status_effects_on_turn_start() -> Array:
+	var expired: Array = []
+	var ticks: Array = []
+
+	for effect in active_effects:
+		if effect.damage_per_tick > 0:
+			effect._ticks_elapsed += 1
+			var should_tick = true
+			if effect.tick_every_other_turn:
+				should_tick = (effect._ticks_elapsed % 2 == 1)  # Tours 1, 3, 5...
+			if should_tick:
+				take_damage(effect.damage_per_tick)
+				ticks.append({"amount": effect.damage_per_tick, "label": effect.effect_name})
+
+		# Effet à déclenchement probabiliste (voir Épée de Damocles) :
+		# à chaque tour de la cible, une chance de se déclencher ; sinon,
+		# le dégât potentiel augmente pour la prochaine tentative. Une
+		# fois déclenché, l'effet disparaît (quel que soit le résultat).
+		if effect.trigger_chance > 0.0:
+			if randf() < effect.trigger_chance:
+				var total = 0
+				for term in effect.trigger_dice_terms:
+					total += term.get("modifier", 0)
+					for i in range(term.get("count", 0)):
+						total += randi_range(1, term.get("sides", 6))
+				total += effect._trigger_turns_waited * effect.trigger_bonus_dice_per_turn_waited
+				take_damage(total)  # Toujours "brut" par nature (voir Spell.ignores_armor pour le sort d'origine).
+				ticks.append({"amount": total, "label": effect.effect_name})
+				expired.append(effect)
+			else:
+				effect._trigger_turns_waited += 1
+
+		if effect.duration_remaining > 0:
+			effect.duration_remaining -= 1
+			if effect.duration_remaining <= 0:
+				expired.append(effect)
+
+	for e in expired:
+		active_effects.erase(e)
+
+	if not expired.is_empty():
+		_recalculate_stats()
+
+	return ticks
 
 func get_melee_damage_bonus() -> int:
 	return max(0, force_stat - 12)
@@ -137,12 +342,94 @@ func get_spell_damage_bonus() -> int:
 
 # Recalcule toutes les stats EFFECTIVES à partir des stats de base
 # (base_*) + les bonus de TOUT l'équipement actuellement porté (armes,
-# armure, accessoires). À appeler à chaque changement d'équipement
-# (voir equip_weapon/equip_armor/equip_accessory/unequip_accessory) —
+# armure, accessoires) ET des effets actifs (buffs/debuffs). À appeler
+# à chaque changement d'équipement ou d'effet (voir
+# equip_weapon/equip_armor/equip_accessory/add_status_effect/etc.) —
 # jamais besoin de modifier max_hp/attack_stat/etc. directement.
+# Vrai si cette unité a la compétence `code` (voir SkillDatabase),
+# héritée de sa race (equipped_race.inherited_skill_codes) — ignore un
+# éventuel "*" final (présent sur certains codes dans les données
+# d'origine, jamais expliqué, traité comme une simple marque).
+func has_skill(code: String) -> bool:
+	if equipped_race != null:
+		for raw in equipped_race.inherited_skill_codes:
+			if raw.rstrip("*") == code:
+				return true
+	if equipped_metier != null:
+		for raw in equipped_metier.inherited_skill_codes:
+			if raw.rstrip("*") == code:
+				return true
+	return false
+
+# Remonte parent_codes depuis equipped_metier jusqu'à la racine,
+# construit la liste de TOUS les noms de la lignée (equipped_metier.
+# lineage_names) et fusionne (OR) tous les drapeaux grants_* des
+# ancêtres directement SUR equipped_metier — pas besoin de garder une
+# liste de ressources Metier à part : equipped_metier devient la
+# "somme" de toute sa lignée, et chaque grants_X / check de nom qui le
+# consulte ailleurs (HexGrid, ici) continue de fonctionner tel quel.
+# Prévient les boucles infinies (parent_codes mal formé) avec une
+# limite de profondeur généreuse.
+# Vrai si `name` fait partie de la lignée de métiers du personnage
+# (equipped_metiers — voir sa doc), pas seulement le dernier/le plus
+# spécialisé. Même esprit que has_skill().
+func has_metier(name: String) -> bool:
+	for m in equipped_metiers:
+		if m.metier_name == name:
+			return true
+	return false
+
+func _apply_metier_lineage() -> void:
+	if equipped_metier == null:
+		return
+
+	equipped_metier.lineage_names = [equipped_metier.metier_name]
+	equipped_metiers = [equipped_metier]
+
+	for parent in _get_metier_ancestors():
+		equipped_metier.lineage_names.append(parent.metier_name)
+		equipped_metiers.append(parent)
+
+		equipped_metier.grants_moine_frappe_energie = equipped_metier.grants_moine_frappe_energie or parent.grants_moine_frappe_energie
+		equipped_metier.grants_voleur_esquive_totale = equipped_metier.grants_voleur_esquive_totale or parent.grants_voleur_esquive_totale
+		equipped_metier.grants_empoisonneur_immunity = equipped_metier.grants_empoisonneur_immunity or parent.grants_empoisonneur_immunity
+		equipped_metier.grants_empoisonneur_dague = equipped_metier.grants_empoisonneur_dague or parent.grants_empoisonneur_dague
+		equipped_metier.grants_assassin_coup_mortel = equipped_metier.grants_assassin_coup_mortel or parent.grants_assassin_coup_mortel
+		equipped_metier.grants_assassin_precision_mortelle = equipped_metier.grants_assassin_precision_mortelle or parent.grants_assassin_precision_mortelle
+		equipped_metier.grants_rodeur_camouflage = equipped_metier.grants_rodeur_camouflage or parent.grants_rodeur_camouflage
+		equipped_metier.grants_ninja_esquive_totale = equipped_metier.grants_ninja_esquive_totale or parent.grants_ninja_esquive_totale
+		equipped_metier.grants_ninja_frappe_des_ombres = equipped_metier.grants_ninja_frappe_des_ombres or parent.grants_ninja_frappe_des_ombres
+		equipped_metier.grants_prestidigitateur_realite_distordue = equipped_metier.grants_prestidigitateur_realite_distordue or parent.grants_prestidigitateur_realite_distordue
+
+# Ancêtres du métier équipé (objets Metier), du plus proche au plus
+# lointain. Si forced_metier_chain est renseignée (aventurier de la Tour),
+# c'est la filière réellement choisie ; sinon on remonte parent_codes[0],
+# ce qui suffit tant qu'un métier n'a qu'un parent direct.
+func _get_metier_ancestors() -> Array:
+	var ancestors: Array = []
+	if not forced_metier_chain.is_empty():
+		for i in range(1, forced_metier_chain.size()):
+			var chosen := MetierDatabase.build(str(forced_metier_chain[i]))
+			if chosen != null:
+				ancestors.append(chosen)
+		return ancestors
+
+	var current := equipped_metier
+	var depth := 0
+	while not current.parent_codes.is_empty() and depth < 10:
+		depth += 1
+		var parent_code: String = current.parent_codes[0]
+		var parent := MetierDatabase.build(parent_code)
+		if parent == null:
+			break
+		ancestors.append(parent)
+		current = parent
+	return ancestors
+
 func _recalculate_stats() -> void:
 	max_hp = base_max_hp
 	max_ea = base_max_ea
+	max_pm = base_max_pm
 	courage = base_courage
 	attack_stat = base_attack_stat
 	parade_stat = base_parade_stat
@@ -152,18 +439,69 @@ func _recalculate_stats() -> void:
 	charisme_stat = base_charisme_stat
 	chance_stat = base_chance_stat
 	armor_value = 0
+	magic_armor_value = 0
 
-	var equipment: Array = []
+	# Compétences (voir Race.inherited_skill_codes / SkillDatabase) avec
+	# un effet de combat direct — trop peu nombreuses et trop
+	# différentes les unes des autres pour un système générique de
+	# bonus_*, donc appliquées à la main ici :
+	if has_skill("AM"):   # Ambidextrie
+		has_ambidextrie = true
+	for effect in active_effects:
+		if effect.grants_ambidextrie:
+			has_ambidextrie = true
+			break
+
+	# Pirate : une arme à feu ("Pistolet...") en main principale ET une
+	# arme de corps à corps (ni "Pistolet", ni déjà à mains nues à
+	# vide) en main secondaire — pas besoin d'Ambidextrie pour ce
+	# combo précis. Les DEUX sens (feu/CAC ou CAC/feu) comptent.
+	if has_metier("Pirate") and equipped_weapon != null and off_hand_weapon != null:
+		var main_is_firearm = equipped_weapon.weapon_name.begins_with("Pistolet")
+		var off_is_firearm = off_hand_weapon.weapon_name.begins_with("Pistolet")
+		if main_is_firearm != off_is_firearm:  # L'une des deux est une arme à feu, l'autre non — exactement le combo visé.
+			has_ambidextrie = true
+
+	if has_skill("DS"):   # Déplacement silencieux
+		max_pm += 1
+	if has_skill("TV"):   # Tête vide
+		magic_armor_value += 1
+	if has_skill("TDM"):  # Truc de mauviette
+		armor_value += 1
+
+	# Voleur (esquive totale) : -3 Adresse un tour sur deux (voir
+	# voleur_ad_malus_active, alterné dans reset_turn_resources).
+	if voleur_ad_malus_active and equipped_metier != null and equipped_metier.grants_voleur_esquive_totale:
+		adresse_stat -= 3
+
+	# Tenir bon (Gladiateur) : +niveau Armure sous 33% PV — recalculé à
+	# chaque appel de cette fonction, y compris juste après avoir
+	# encaissé des dégâts (voir take_damage()), pour rester à jour.
+	if has_metier("Gladiateur") and max_hp > 0 and float(current_hp) / max_hp < 0.33:
+		armor_value += level
+
+	# Équipement, race, métier ET effets actifs (buffs/debuffs)
+	# partagent les mêmes noms de champs bonus_* — même boucle pour
+	# tous, peu importe leur provenance.
+	var sources: Array = []
 	if equipped_weapon != null:
-		equipment.append(equipped_weapon)
+		sources.append(equipped_weapon)
 	if has_ambidextrie and off_hand_weapon != null:
-		equipment.append(off_hand_weapon)
+		sources.append(off_hand_weapon)
 	if equipped_armor != null:
-		equipment.append(equipped_armor)
+		sources.append(equipped_armor)
+	for armor_piece in equipped_armor_pieces:
+		sources.append(armor_piece)
 	for accessory in equipped_accessories:
-		equipment.append(accessory)
+		sources.append(accessory)
+	if equipped_race != null:
+		sources.append(equipped_race)
+	if equipped_metier != null:
+		sources.append(equipped_metier)
+	for effect in active_effects:
+		sources.append(effect)
 
-	for item in equipment:
+	for item in sources:
 		courage += item.bonus_courage
 		intelligence_stat += item.bonus_intelligence
 		charisme_stat += item.bonus_charisme
@@ -173,12 +511,31 @@ func _recalculate_stats() -> void:
 		attack_stat += item.bonus_attaque
 		parade_stat += item.bonus_parade
 		armor_value += item.bonus_armure
+		magic_armor_value += item.bonus_armure_magique
 		max_hp += item.bonus_vie
 		max_ea += item.bonus_mana
 
+	# Berzerk : pas d'Énergie Astrale (même celle que lui donneraient sa race
+	# ou son équipement) — c'est la Rage qui lui sert de ressource.
+	if has_metier("Berzerk"):
+		max_ea = 0
+
 	# Les PV/EA courants ne doivent jamais dépasser le nouveau maximum
-	# (utile si on retire un équipement qui augmentait max_hp/max_ea).
+	# (utile si on retire un équipement/effet qui augmentait max_hp/max_ea).
 	current_hp = min(current_hp, max_hp)
+
+	# Intouchable/invulnérable/gelé : dérivés des effets actifs, jamais
+	# assignés directement ailleurs (voir la doc sur ces 3 champs plus haut).
+	is_untargetable = false
+	is_invulnerable = false
+	is_frozen = false
+	for effect in active_effects:
+		if effect.grants_untargetable:
+			is_untargetable = true
+		if effect.grants_invulnerable:
+			is_invulnerable = true
+		if effect.grants_frozen:
+			is_frozen = true
 	current_ea = min(current_ea, max_ea)
 
 # Posture actuelle (choisie à son tour, persiste jusqu'au tour suivant).
@@ -191,6 +548,125 @@ var defensive_stance: int = DefensiveStance.PARRY
 # qu'elle subit (règle "1 attaque sur 2"). Remis à true au début de
 # son propre tour (voir reset_turn_resources).
 var dodge_available: bool = true
+
+## Ressources des capacités actives propres à une race (voir
+## Race.grants_hobbit_*) — initialisées en début de combat dans
+## HexGrid.build_unit(), PAS remises à zéro à chaque tour (ce sont des
+## réserves pour tout le combat, contrairement à dodge_available).
+var hobbit_bravoure_uses: int = 0
+var detect_uses: int = 0  # Charges de Détecter (DET), 3 par combat.
+var hobbit_stones: int = 0
+
+## Combo (Samurai, voir Race.grants_samurai_combo) : nombre d'attaques
+## d'arme au CORPS À CORPS faites ce tour-ci ; et si la défense
+## (Parade/Esquive) est actuellement désactivée suite à un échec en 2e
+## attaque. Les deux sont remis à zéro par reset_turn_resources, qui
+## tourne au DÉBUT du tour de cette unité — donc la désactivation de
+## défense dure bien "jusqu'au prochain tour du Samurai", comme prévu :
+## elle reste vraie pendant les tours adverses entre-temps.
+var samurai_melee_attacks_this_turn: int = 0
+var samurai_combo_disabled_defense: bool = false
+
+## Arme céleste (Walkyrie) : nombre d'attaques d'arme restantes où les
+## dégâts sont traités comme magiques (réduits par magic_armor_value
+## plutôt qu'armor_value) — décrémenté à chaque attaque d'arme dans
+## HexGrid._resolve_weapon_attack, peu importe qu'elle touche ou non.
+var magic_weapon_attacks_remaining: int = 0
+
+## Niveau du personnage (voir WorldManager.party_level côté joueur,
+## transféré par PlacementManager avant le combat — 1 par défaut pour
+## les ennemis, qui n'ont pas de progression). Utilisé par les
+## formules de sorts du Prêtre qui référencent "niveau" (voir
+## Spell.includes_caster_level/level_multiplier).
+var level: int = 1
+
+## Ordre choisi par un Prêtre (voir pretre_spell_catalog.gd) : "Ordre
+## de l'harmonie", "Ordre du néant" ou "Ordre du cycle éternel" — un
+## Prêtre n'appartient qu'à UN SEUL Ordre à la fois (spécialisation
+## exclusive), qui détermine à la fois quels sorts il reçoit (voir
+## PretreSpellCatalog.build_for_order) ET qui bénéficie de la nuit
+## (Noirceur ne profite qu'aux Prêtres de l'Ordre du néant — voir
+## HexGrid._install_night). Vide/sans effet pour tout le monde
+## d'autre (pas un Prêtre, ou Prêtre sans Ordre choisi).
+var pretre_order: String = ""
+
+## Nombre de charges d'Infection actives (Ordre du cycle éternel,
+## Prêtre) — posées par "Infection" (cumulable, pas de limite dans les
+## données d'origine), déclenchées et consommées d'un coup par
+## "Nécrose" (4 dégâts bruts par charge).
+var infection_stacks: int = 0
+
+## Nombre de Mécas invoqués ce combat (Ingénieur Automate — voir
+## meca_spell_catalog.gd) — plafonné à 2, toutes branches confondues
+## (Doc/Tanker/Combat/Support), selon la restriction du métier d'origine.
+var mecas_summoned_this_combat: int = 0
+
+## Bouclier de Foi (Templier) : réserve de points qui absorbe les
+## dégâts entrants avant qu'ils n'atteignent les PV — voir take_damage().
+## Un coup CRITIQUE détruit le bouclier d'un coup, quelle que soit sa
+## réserve restante (les dégâts du critique passent alors en entier).
+var shield_power: int = 0
+
+## ============================================================
+## Berzerk — voir berzerk_spell_catalog.gd.
+## ============================================================
+
+## Rage (Berzerk) : +1 par point de dégâts REÇU (voir take_damage()),
+## pas de plafond précisé dans les données d'origine. Dépensée par
+## Frappe puissante (5), Tourbillon (10), Raaah (X, voir plus bas).
+var rage: int = 0
+
+## Raaah : 1 fois par combat — convertit X rage en +X/10 dégâts
+## PERMANENTS (voir berzerk_permanent_damage_bonus).
+var raaah_used_this_combat: bool = false
+var berzerk_permanent_damage_bonus: int = 0
+
+## ============================================================
+## Gladiateur — voir gladiateur_spell_catalog.gd.
+## ============================================================
+
+## Gloire : +1 par attaque réussie, +2 par parade réussie, -1 par
+## parade ratée (voir HexGrid._resolve_weapon_attack) — commence à 5
+## (Pour la gloire), posé dans _ready(). Dépensée par Doigt d'honneur
+## (5), Coup de bouclier (7), Tortue (10).
+var gloire: int = 0
+
+## Maître d'armes : nombre d'attaques réussies, NON PARÉES et NON
+## ESQUIVÉES d'affilée (+2 dégâts par cran, voir
+## HexGrid._resolve_weapon_attack) — remis à 0 sur une attaque ratée,
+## parée OU esquivée.
+var maitre_armes_streak: int = 0
+
+## Corsaire (Salve) : vrai une fois utilisée — 1 fois max par combat.
+var corsaire_salve_used: bool = false
+
+## Voleur (esquive totale) : vrai un tour sur deux (alterné à chaque
+## DÉBUT de son propre tour, voir reset_turn_resources) — -3 Adresse
+## appliqué dans _recalculate_stats() tant que vrai. Sans effet pour
+## tout autre métier.
+var voleur_ad_malus_active: bool = false
+
+## Empoisonneur (Dague empoisonnée) : vrai dès que le bonus de la
+## première attaque du combat a été appliqué — voir
+## HexGrid._resolve_weapon_attack. Ne se remet jamais à false en
+## cours de combat (une seule fois par combat, pas par tour).
+var empoisonneur_first_attack_used: bool = false
+
+## Assassin (Coup mortel) : références des cibles DÉJÀ frappées au
+## moins une fois ce combat — le premier coup sur CHAQUE cible
+## bénéficie de la fenêtre de critique étendue (1 à 4), pas juste le
+## premier coup du combat dans l'absolu. Marquée dès la TENTATIVE
+## (touchée ou non), voir HexGrid._resolve_weapon_attack.
+var assassin_hit_targets: Array = []
+
+## Ninja (Permutation) : nombre de fois déjà utilisée ce combat — 3 max.
+var ninja_permutations_used: int = 0
+
+## Peintre : usages consommés dès le LANCER, que le test réussisse ou
+## non (voir la note de Spell.is_peintre_peinture_de_guerre sur cette
+## interprétation). Peinture de guerre : 1 fois max. Maquillage : 3 fois max.
+var peintre_peinture_de_guerre_used: bool = false
+var peintre_maquillage_used: int = 0
 
 ## Si activé, l'unité peut équiper une seconde arme (off_hand_weapon)
 ## et bénéficie donc de 2 attaques d'arme par tour au lieu d'une seule
@@ -253,6 +729,23 @@ var utility_action_slot: Spell
 signal died(unit: CombatUnit)
 
 func _ready() -> void:
+	# Tout en premier : un personnage a sa race et TOUTE la lignée de
+	# ses métiers (pas que le dernier) — Ménestrel EST un Barde, par
+	# exemple. Fusionne les noms ET les drapeaux grants_* de tous les
+	# ancêtres dans equipped_metier lui-même, pour que tout le reste du
+	# code (ici et dans HexGrid) continue à le consulter normalement
+	# sans rien changer d'autre.
+	_apply_metier_lineage()
+
+	# Pour la gloire (Gladiateur) : commence le combat avec 5 Gloires.
+	if has_metier("Gladiateur"):
+		gloire = 5
+
+	# Rage (Berzerk) : commence le combat avec 5 (puis +1 par point de
+	# dégâts subi, voir take_damage).
+	if has_metier("Berzerk"):
+		rage = 5
+
 	# D'abord : les stats effectives (max_hp, max_ea, etc.) dépendent de
 	# l'équipement déjà assigné à ce stade (voir HexGrid.build_unit(),
 	# qui assigne l'équipement AVANT add_child — donc avant que _ready()
@@ -275,6 +768,209 @@ func _ready() -> void:
 	# a l'Ambidextrie ET qu'une arme secondaire est définie.
 	if has_ambidextrie and off_hand_weapon != null:
 		spells.insert(1, off_hand_weapon.create_attack_spell())
+
+	# Capacités actives propres à une race (voir Race.grants_hobbit_*/
+	# grants_samurai_*) — ajoutées ici (pas dans HexGrid.build_unit())
+	# car equipped_race n'est assigné qu'après build_unit() pour l'unité
+	# du joueur (voir PlacementManager), mais toujours avant _ready().
+	if equipped_race != null:
+		if equipped_race.grants_hobbit_bravoure:
+			hobbit_bravoure_uses = 3
+			# Un bouton par valeur de X (1 à 5, plage raisonnable non
+			# précisée dans les données d'origine) : Test Courage-X,
+			# +X Force si réussi — voir HexGrid._resolve_hobbit_bravoure.
+			for x in range(1, 6):
+				var bravoure := Spell.new()
+				bravoure.spell_name = "Bravoure (X=%d)" % x
+				bravoure.target_mode = Spell.TargetMode.SELF
+				bravoure.is_hobbit_bravoure = true
+				bravoure.bravoure_x = x
+				bravoure.ea_cost = 0
+				spells.append(bravoure)
+
+		if equipped_race.grants_hobbit_precision:
+			hobbit_stones = 6
+			var precision := Spell.new()
+			precision.spell_name = "Précision des hobbits"
+			precision.target_mode = Spell.TargetMode.SINGLE_ENEMY
+			precision.min_range = 1
+			precision.max_range = 4  # Portée de lancer raisonnable, non précisée dans les données d'origine.
+			precision.is_hobbit_precision = true
+			precision.ea_cost = 0
+			spells.append(precision)
+
+		if equipped_race.grants_samurai_concentration:
+			var concentration := Spell.new()
+			concentration.spell_name = "Concentration"
+			concentration.target_mode = Spell.TargetMode.SELF
+			concentration.is_samurai_concentration = true
+			concentration.ea_cost = 0
+			spells.append(concentration)
+
+	# Compétence Détecter (DET, voir skill_database.gd) : révèle toutes les
+	# unités invisibles dans un rayon de 2 cases autour du lanceur. Gratuite
+	# en EA, sans limite d'usage (non précisés dans les données d'origine).
+	if has_skill("DET"):
+		detect_uses = 3
+		var detect := Spell.new()
+		detect.is_detect_skill = true
+		detect.spell_name = "Détecter"
+		detect.target_mode = Spell.TargetMode.BATTLEFIELD
+		detect.battlefield_radius = 2
+		detect.reveals_invisible = true
+		detect.unavoidable = true
+		detect.ea_cost = 0
+		detect.icon_path = "res://assets/spell_icons/mage/detection_de_zone.png"
+		spells.append(detect)
+
+	# Sorts de la branche de métier Walkyrie (voir
+	# walkyrie_spell_catalog.gd) — liés au MÉTIER équipé, pas à la race
+	# (malgré le nom "Walkyrie" qui existe aussi comme race, sans
+	# rapport ici). Cumulatifs selon l'arborescence d'origine, gérés
+	# dans build_for_metier lui-même.
+	if equipped_metier != null:
+		for s in WalkyrieSpellCatalog.build_for_metier(equipped_metier.metier_name):
+			spells.append(s)
+
+	# Sorts de la RACE Elfe Sylvain (voir elfe_sylvain_spell_catalog.gd)
+	# — liés à la race équipée, pas au métier (à la différence des
+	# sorts Walkyrie ci-dessus).
+	if equipped_race != null and equipped_race.race_name == "Elfe Sylvain":
+		for s in ElfeSylvainSpellCatalog.build_all():
+			spells.append(s)
+
+	# Sorts du MÉTIER Prêtre (voir pretre_spell_catalog.gd) — un Prêtre
+	# n'appartient qu'à UN SEUL Ordre (pretre_order), qui détermine
+	# lesquels de ses sorts il reçoit. Être nocturne / Maître de la nuit :
+	# PAS appliqués ici — ce sont des passifs CONDITIONNELS à la nuit
+	# (posée par Noirceur, Ordre du néant uniquement), gérés côté
+	# HexGrid (voir _install_night/_end_night), pas des bonus permanents
+	# à la création de l'unité.
+	if has_metier("Prêtre"):
+		for s in PretreSpellCatalog.build_for_order(pretre_order):
+			spells.append(s)
+
+	# Sorts du MÉTIER Forgeur de runes (voir
+	# forgeur_de_runes_spell_catalog.gd) — accordés d'un coup.
+	if has_metier("Forgeur de runes"):
+		for s in ForgeurDeRunesSpellCatalog.build_all():
+			spells.append(s)
+
+	# Sorts du MÉTIER Archéologue (voir archeologue_spell_catalog.gd) —
+	# accordés d'un coup.
+	if has_metier("Archéologue"):
+		for s in ArcheologueSpellCatalog.build_all():
+			spells.append(s)
+
+	# Sorts du MÉTIER Conservateur (voir conservateur_spell_catalog.gd)
+	# — accordés d'un coup.
+	if has_metier("Conservateur"):
+		for s in ConservateurSpellCatalog.build_all():
+			spells.append(s)
+
+	# Sorts d'invocation de Méca du MÉTIER Ingénieur Automate (voir
+	# meca_spell_catalog.gd) — accordés d'un coup (4 sorts, pas 12 : les
+	# paliers Supplément 1/2 sont gérés au moment de l'invocation selon
+	# le niveau, pas par des sorts séparés).
+	if has_metier("Ingénieur Automate"):
+		for s in MecaSpellCatalog.build_all():
+			spells.append(s)
+
+	# Sorts du MÉTIER Moine (voir moine_spell_catalog.gd) — accordés
+	# d'un coup. Frappe d'énergie (passif, fenêtre de critique étendue
+	# à mains nues) n'est PAS un sort : géré directement dans HexGrid
+	# via Metier.grants_moine_frappe_energie.
+	if has_metier("Moine"):
+		for s in MoineSpellCatalog.build_all():
+			spells.append(s)
+
+	# Sorts du MÉTIER Templier (voir templier_spell_catalog.gd) —
+	# accordés d'un coup.
+	if has_metier("Templier"):
+		for s in TemplierSpellCatalog.build_all():
+			spells.append(s)
+
+	# Camouflage Naturel (Rôdeur) : invisible dès le départ, jusqu'à sa
+	# première attaque d'arme (voir HexGrid._resolve_weapon_attack, qui
+	# retire cet effet précis par son nom).
+	if equipped_metier != null and equipped_metier.grants_rodeur_camouflage:
+		var camouflage := StatusEffect.new()
+		camouflage.effect_name = "Camouflage Naturel"
+		camouflage.duration_remaining = -1
+		camouflage.grants_untargetable = true
+		add_status_effect(camouflage)
+
+	# Sorts du MÉTIER Ninja (voir ninja_spell_catalog.gd) — accordés
+	# d'un coup. Esquive totale sans malus et Frappe des ombres
+	# (passifs) ne sont PAS des sorts : gérés directement dans HexGrid
+	# via Metier.grants_ninja_esquive_totale/grants_ninja_frappe_des_ombres.
+	if has_metier("Ninja"):
+		for s in NinjaSpellCatalog.build_all():
+			spells.append(s)
+
+	# Sorts du MÉTIER Peintre (voir peintre_spell_catalog.gd) — accordés
+	# d'un coup.
+	if has_metier("Peintre"):
+		for s in PeintreSpellCatalog.build_all():
+			spells.append(s)
+
+	# Sorts du MÉTIER Prestidigitateur (voir
+	# prestidigitateur_spell_catalog.gd) — accordés d'un coup. Réalité
+	# distordue (immunité aux critiques) n'est PAS un sort : géré
+	# directement dans HexGrid via
+	# Metier.grants_prestidigitateur_realite_distordue.
+	if has_metier("Prestidigitateur"):
+		for s in PrestidigitateurSpellCatalog.build_all():
+			spells.append(s)
+
+	# Sorts du MÉTIER Barde (voir barde_spell_catalog.gd) — accordés
+	# d'un coup (Sordino exclu). Le Ménestrel EST un Barde (confirmé) :
+	# il les reçoit aussi, pas seulement "Barde" au sens strict.
+	if has_metier("Barde"):
+		for s in BardeSpellCatalog.build_all():
+			spells.append(s)
+
+	# Sorts du MÉTIER Soldat (voir soldat_spell_catalog.gd) — accordés
+	# d'un coup. Formation (passif) n'est PAS un sort : géré
+	# directement dans HexGrid via CombatUnit.has_metier("Soldat").
+	if has_metier("Soldat"):
+		for s in SoldatSpellCatalog.build_all():
+			spells.append(s)
+
+	# Sorts du MÉTIER Berzerk (voir berzerk_spell_catalog.gd) — accordés
+	# d'un coup. Rage/Enragé/Coûte que coûte (passifs) ne sont PAS des
+	# sorts : gérés directement dans take_damage()/HexGrid.
+	if has_metier("Berzerk"):
+		for s in BerzerkSpellCatalog.build_all():
+			spells.append(s)
+
+	# Sorts du MÉTIER Gladiateur (voir gladiateur_spell_catalog.gd) —
+	# accordés d'un coup. Gloire/Pour la gloire/Tenir bon (passifs) ne
+	# sont PAS des sorts : gérés directement dans _ready()/
+	# _recalculate_stats()/take_damage()/HexGrid.
+	if has_metier("Gladiateur"):
+		for s in GladiateurSpellCatalog.build_all():
+			spells.append(s)
+
+	# Sorts du MÉTIER Corsaire (voir corsaire_spell_catalog.gd) —
+	# accordés d'un coup.
+	if has_metier("Corsaire"):
+		for s in CorsaireSpellCatalog.build_all():
+			spells.append(s)
+
+	# Sorts du MÉTIER Mage (75 sorts, voir mage_spell_catalog.gd). Ils n'étaient
+	# accordés que par le gabarit "Mage" (UnitDatabase.build_spells) : un
+	# personnage dont le MÉTIER est Mage — comme un aventurier de la Tour —
+	# n'en avait aucun. Dédoublonnés par nom : l'unité construite d'après le
+	# gabarit "Mage" ET portant le métier Mage (le personnage de l'exploration)
+	# a déjà ces 75 sorts, ils ne doivent pas être comptés deux fois.
+	if has_metier("Mage, Sorcier"):
+		var known_spell_names: Dictionary = {}
+		for existing_spell in spells:
+			known_spell_names[existing_spell.spell_name] = true
+		for mage_spell in MageSpellCatalog.build_all():
+			if not known_spell_names.has(mage_spell.spell_name):
+				spells.append(mage_spell)
 
 	utility_action_slot = Spell.new()
 	utility_action_slot.spell_name = "Action utilitaire"
@@ -383,10 +1079,35 @@ func face_direction(target_local_pos: Vector2) -> void:
 	_current_facing_suffix = "_" + directions[index]
 	_sprite.flip_h = false
 
+# Vrai si `attacker_position` se trouve globalement DANS LE DOS de
+# cette unité — c'est-à-dire à l'opposé de l'endroit qu'elle regarde
+# actuellement (voir _current_facing_suffix, mis à jour par
+# face_direction() à chaque action). Tolérance de ±3 crans sur 8
+# (donc jusqu'à 135° de part et d'autre de l'opposé exact), pas
+# seulement pile en face — voir Frappe des ombres (Ninja).
+func is_attacked_from_behind(attacker_position: Vector2) -> bool:
+	var directions = ["e", "se", "s", "sw", "w", "nw", "n", "ne"]
+	var my_facing_index = directions.find(_current_facing_suffix.substr(1))
+	if my_facing_index == -1:
+		return false
+
+	var delta = attacker_position - position
+	if delta.length_squared() < 0.01:
+		return false  # Attaquant ~sur soi : indéterminé, pas "dans le dos".
+
+	var angle_deg = rad_to_deg(atan2(delta.y, delta.x))
+	var attacker_index = ((int(round(angle_deg / 45.0)) % 8) + 8) % 8
+
+	var diff = abs(my_facing_index - attacker_index)
+	diff = min(diff, 8 - diff)  # Distance circulaire la plus courte.
+	return diff >= 3
+
 func _create_default_weapon() -> Weapon:
 	var w := Weapon.new()
 	w.weapon_name = "Poings"
-	w.damage = 5
+	w.damage = 4  # Affichage seulement : les vrais dégâts sont 1D (dice_count).
+	w.dice_count = 1
+	w.dice_modifier = 0
 	w.weapon_type = Weapon.WeaponType.MELEE
 	w.min_range = 1
 	w.max_range = 1
@@ -401,6 +1122,14 @@ func reset_turn_resources() -> void:
 	all_actions_weapon_attacks_this_turn = true
 	spells_used_this_turn.clear()
 	dodge_available = true
+	samurai_melee_attacks_this_turn = 0
+	samurai_combo_disabled_defense = false
+
+	# Voleur (esquive totale) : alterné à CHAQUE tour (pas juste quand
+	# le métier est actif, pour que le cycle reste cohérent si le
+	# métier change en cours de combat — improbable, mais sans risque).
+	voleur_ad_malus_active = not voleur_ad_malus_active
+	_recalculate_stats()
 
 func set_defensive_stance(stance: int) -> void:
 	defensive_stance = stance
@@ -498,6 +1227,14 @@ func equip_armor(new_armor: Armor) -> bool:
 	_recalculate_stats()
 	return true
 
+# Assigne la race — PAS de coût d'action utilitaire, contrairement à
+# equip_weapon/equip_armor : la race se choisit hors combat (à la
+# création du personnage), pas comme un changement d'équipement
+# tactique en pleine bataille.
+func equip_race(new_race: Race) -> void:
+	equipped_race = new_race
+	_recalculate_stats()
+
 # Ajoute un accessoire équipé (plusieurs possibles simultanément — pas
 # de remplacement automatique, contrairement à l'arme/l'armure).
 # Consomme l'action utilitaire du tour.
@@ -518,7 +1255,10 @@ func unequip_accessory(accessory: Accessory) -> bool:
 	return true
 
 func _draw() -> void:
-	var color = player_color if team == Team.PLAYER else enemy_color
+	# Une invocation peut avoir sa propre couleur de repli (voir
+	# Spell.summon_color) plutôt que la couleur d'équipe générique —
+	# alpha à 0 (défaut) = pas de personnalisation, comportement normal.
+	var color = custom_fallback_color if custom_fallback_color.a > 0 else (player_color if team == Team.PLAYER else enemy_color)
 	var name_y_offset: float
 
 	if sprite_sheet != null:
@@ -562,13 +1302,44 @@ func move_to_pixel(pixel_pos: Vector2) -> void:
 	tween.tween_property(self, "position", pixel_pos, 0.3).set_trans(Tween.TRANS_SINE).set_ease(Tween.EASE_IN_OUT)
 	tween.finished.connect(func(): play_animation("idle"))
 
-func take_damage(amount: int) -> void:
+func take_damage(amount: int, is_critical_hit: bool = false) -> void:
+	# Immunité totale (Intangibilité, Cryogénisation...) : ignore TOUT
+	# dégât entrant, mais les soins (amount <= 0) passent toujours —
+	# rien dans les sorts concernés ne dit qu'on ne peut plus être soigné.
+	if is_invulnerable and amount > 0:
+		return
+
+	# Bouclier de Foi (Templier) : absorbe les dégâts avant qu'ils
+	# n'atteignent les PV. Un critique le détruit NET, peu importe sa
+	# réserve restante — les dégâts du critique passent alors en entier
+	# (pas d'absorption partielle sur un critique, voir la donnée d'origine).
+	if amount > 0 and shield_power > 0:
+		if is_critical_hit:
+			shield_power = 0
+		else:
+			var absorbed = min(amount, shield_power)
+			shield_power -= absorbed
+			amount -= absorbed
+			if amount <= 0:
+				return  # Totalement absorbé, rien n'atteint les PV.
+
+	# Rage (Berzerk) : +1 par point de dégâts RÉELLEMENT subi (après
+	# l'absorption du bouclier ci-dessus, s'il y en avait un).
+	if amount > 0 and equipped_metier != null and has_metier("Berzerk"):
+		rage += amount
+
 	var was_alive = current_hp > 0
 
 	# Un montant négatif (ex: sort de soin) augmente les PV au lieu de
 	# les diminuer — clampé pour ne jamais dépasser max_hp ni descendre
 	# sous 0.
 	current_hp = clamp(current_hp - amount, 0, max_hp)
+
+	# Tenir bon (Gladiateur) : recalcule tout de suite après avoir
+	# encaissé, pour que le bonus d'Armure sous 33% PV soit à jour dès
+	# la prochaine attaque (pas seulement au prochain tour).
+	if amount > 0 and has_metier("Gladiateur"):
+		_recalculate_stats()
 
 	if amount > 0 and was_alive:
 		if current_hp == 0:

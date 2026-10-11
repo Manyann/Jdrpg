@@ -11,13 +11,14 @@ config_version=5
 [application]
 
 config/name="Jdrpg"
-run/main_scene="uid://bqvvpprdm6cge"
+run/main_scene="uid://dmxv62jgbudmo"
 config/features=PackedStringArray("4.7", "Forward Plus")
 config/icon="res://icon.svg"
 
 [autoload]
 
 WorldManager="*uid://s56rvhg1u87e"
+TowerManager="*uid://cfu6smwcmmq8x"
 
 [display]
 
