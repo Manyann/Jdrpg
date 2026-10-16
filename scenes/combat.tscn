@@ -6,8 +6,35 @@
 
 [node name="Combat_grid" type="Node2D" unique_id=1788730367]
 script = ExtResource("1_m1klq")
+grid_radius = null
+hex_size = null
+iso_squash = null
+line_color = null
+fill_color = null
+hover_color = null
+selected_color = null
+auto_center = null
+player_zone_color = null
+enemy_zone_color = null
+reachable_color = null
+player_units = null
+enemy_units = null
+player_courage = null
+enemy_courage = null
 turn_manager_path = NodePath("TurnManager")
 placement_manager_path = NodePath("PlacementManager")
+placement_zone_color = null
+center_zone_radius = null
+obstacle_coords = null
+water_obstacle_coords = null
+void_obstacle_coords = null
+obstacle_color = null
+water_obstacle_color = null
+void_obstacle_color = null
+spell_range_color = null
+terrain_selection_color = null
+zone_preview_color = null
+zone_anchor_color = null
 
 [node name="TurnManager" type="Node2D" parent="." unique_id=1557947043]
 script = ExtResource("2_7hn6t")

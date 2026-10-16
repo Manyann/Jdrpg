@@ -47,9 +47,22 @@ static func _build_raaah() -> Spell:
 	s.spell_type = Spell.SpellType.PHYSICAL
 	return s
 
+static func _build_grr() -> Spell:
+	var s := Spell.new()
+	s.spell_name = "GRRRRRBLBLBL"
+	s.target_mode = Spell.TargetMode.SELF
+	s.is_rage_cost_spell = true
+	s.is_berzerk_grr = true
+	s.ev_cost_min = 10
+	s.ev_cost_max = 999
+	s.spell_type = Spell.SpellType.COURAGE
+	s.info_text = "Transforme 10×X Rage en X PI (dégâts supplémentaires). 1 fois par combat. Test de Courage."
+	return s
+
 static func build_all() -> Array:
 	return ClassSpellIcons.apply([
 		_build_frappe_puissante(),
 		_build_tourbillon(),
 		_build_raaah(),
+		_build_grr(),
 	])

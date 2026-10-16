@@ -21,6 +21,8 @@ enum DefensiveStance { NONE, PARRY, DODGE }
 @export var unit_name: String = "Unit"
 @export var team: Team = Team.PLAYER
 @export var radius: float = 18.0
+## Rayon (px) des tokens affichés à la place des sprites (voir TokenDatabase).
+const TOKEN_RADIUS := 22.0
 
 ## Couleurs par équipe.
 @export var player_color: Color = Color(0.25, 0.55, 0.95)
@@ -464,6 +466,10 @@ func _recalculate_stats() -> void:
 
 	if has_skill("DS"):   # Déplacement silencieux
 		max_pm += 1
+	if has_skill("ALM"):  # Attire les monstres : les monstres le visent en priorité (voir EnemyAI).
+		is_taunting = true
+	if equipped_race != null and equipped_race.race_name == "Walkyrie":  # Vol : +1 PM.
+		max_pm += 1
 	if has_skill("TV"):   # Tête vide
 		magic_armor_value += 1
 	if has_skill("TDM"):  # Truc de mauviette
@@ -554,6 +560,22 @@ var dodge_available: bool = true
 ## HexGrid.build_unit(), PAS remises à zéro à chaque tour (ce sont des
 ## réserves pour tout le combat, contrairement à dodge_available).
 var hobbit_bravoure_uses: int = 0
+var coup_decisif_on: bool = false          # Chasseurs de primes/monstres : bascule ON/OFF.
+var meca_support_choice: String = "attaque"  # Méca Support : "attaque" ou "parade", choisi à chaque tour.
+var is_meca_support: bool = false
+var tanker_aura_count: int = 0  # Méca Tanker : nombre d'alliés protégés par l'aura.
+var ogre_pi_converted: int = 0   # PI déjà convertis par l'Ogre (3 maximum).
+var grr_used_this_combat: bool = false
+var keep_corpse: bool = false   # Mort : garder le cadavre pour une résurrection (voir HexGrid._graveyard).
+var is_summoned: bool = false
+var pi: int = 0         # Points d'Impact : dégâts supplémentaires sur chaque attaque d'arme.
+var chain_pi: int = 0   # PI de l'Enchaînement (Ninja), remis à 0 si une attaque ne fait pas de dégâts.
+var redirect_source = null      # Un pour tous : l'unité qui encaisse à ma place...
+var redirect_charges: int = 0   # ... pour ce nombre de dégâts encore.
+var redirect_effect = null      # Le malus d'AT du gladiateur, retiré à la fin.
+var balance_next_is_damage: bool = false  # Balance de l'univers : alterne soin / dégâts.
+var parallel_partner = null  # Plan parallèle : l'autre unité du plan (voir HexGrid.can_interact).
+var parallel_turns_remaining: int = 0
 var detect_uses: int = 0  # Charges de Détecter (DET), 3 par combat.
 var hobbit_stones: int = 0
 
@@ -788,6 +810,17 @@ func _ready() -> void:
 				bravoure.ea_cost = 0
 				spells.append(bravoure)
 
+		if equipped_race.grants_ogre_pi:
+			for x in range(1, 4):
+				var ogre_spell := Spell.new()
+				ogre_spell.spell_name = "PI d'ogre (X=%d)" % x
+				ogre_spell.target_mode = Spell.TargetMode.SELF
+				ogre_spell.is_ogre_pi = true
+				ogre_spell.ogre_pi_x = x
+				ogre_spell.ea_cost = 0
+				ogre_spell.info_text = "Retire %d AT et %d PRD pour gagner +%d PI (3 maximum par combat)." % [x, x, x]
+				spells.append(ogre_spell)
+
 		if equipped_race.grants_hobbit_precision:
 			hobbit_stones = 6
 			var precision := Spell.new()
@@ -847,7 +880,7 @@ func _ready() -> void:
 	# HexGrid (voir _install_night/_end_night), pas des bonus permanents
 	# à la création de l'unité.
 	if has_metier("Prêtre"):
-		for s in PretreSpellCatalog.build_for_order(pretre_order):
+		for s in PretreSpellCatalog.build_for_order(pretre_order, level):
 			spells.append(s)
 
 	# Sorts du MÉTIER Forgeur de runes (voir
@@ -968,7 +1001,7 @@ func _ready() -> void:
 		var known_spell_names: Dictionary = {}
 		for existing_spell in spells:
 			known_spell_names[existing_spell.spell_name] = true
-		for mage_spell in MageSpellCatalog.build_all():
+		for mage_spell in MageSpellCatalog.build_for_level(level):
 			if not known_spell_names.has(mage_spell.spell_name):
 				spells.append(mage_spell)
 
@@ -1101,6 +1134,22 @@ func is_attacked_from_behind(attacker_position: Vector2) -> bool:
 	var diff = abs(my_facing_index - attacker_index)
 	diff = min(diff, 8 - diff)  # Distance circulaire la plus courte.
 	return diff >= 3
+
+# Vrai si cette unité regarde globalement vers `pos` (même repère que position) :
+# écart d'au plus 1 cran sur les 8 orientations (Disque de lumière).
+func is_facing(pos: Vector2) -> bool:
+	var directions = ["e", "se", "s", "sw", "w", "nw", "n", "ne"]
+	var my_index = directions.find(_current_facing_suffix.substr(1))
+	if my_index == -1:
+		return true
+	var delta = pos - position
+	if delta.length_squared() < 0.01:
+		return true
+	var angle_deg = rad_to_deg(atan2(delta.y, delta.x))
+	var idx = ((int(round(angle_deg / 45.0)) % 8) + 8) % 8
+	var diff = abs(my_index - idx)
+	diff = min(diff, 8 - diff)
+	return diff <= 1
 
 func _create_default_weapon() -> Weapon:
 	var w := Weapon.new()
@@ -1261,7 +1310,16 @@ func _draw() -> void:
 	var color = custom_fallback_color if custom_fallback_color.a > 0 else (player_color if team == Team.PLAYER else enemy_color)
 	var name_y_offset: float
 
-	if sprite_sheet != null:
+	var token := TokenDatabase.texture_for(self)
+	if _sprite != null:
+		_sprite.visible = token == null
+	if token != null:
+		# Token (médaillon) à la place du sprite : anneau de la couleur de
+		# l'équipe pour distinguer alliés et ennemis.
+		draw_texture_rect(token, Rect2(-TOKEN_RADIUS, -TOKEN_RADIUS, TOKEN_RADIUS * 2, TOKEN_RADIUS * 2), false)
+		draw_arc(Vector2.ZERO, TOKEN_RADIUS, 0, TAU, 48, color, 3.0, true)
+		name_y_offset = -TOKEN_RADIUS - 6
+	elif sprite_sheet != null:
 		# Le vrai sprite (enfant AnimatedSprite2D) s'affiche par-dessus.
 		# sprite_y_offset corrige une éventuelle marge interne/transparente
 		# de la feuille de sprites pour que les pieds VISIBLES tombent au
@@ -1279,13 +1337,14 @@ func _draw() -> void:
 		name_y_offset = -radius - 8
 
 	# Nom de l'unité affiché au-dessus.
+	var label_width: float = 110.0 if token != null else radius * 2
 	var font = ThemeDB.fallback_font
 	draw_string(
 		font,
-		Vector2(-radius, name_y_offset),
+		Vector2(-label_width * 0.5, name_y_offset),
 		unit_name,
 		HORIZONTAL_ALIGNMENT_CENTER,
-		radius * 2,
+		label_width,
 		14,
 		Color.WHITE
 	)
@@ -1302,7 +1361,74 @@ func move_to_pixel(pixel_pos: Vector2) -> void:
 	tween.tween_property(self, "position", pixel_pos, 0.3).set_trans(Tween.TRANS_SINE).set_ease(Tween.EASE_IN_OUT)
 	tween.finished.connect(func(): play_animation("idle"))
 
+# Nom de la ressource des sorts « normaux » : PA pour le Prêtre, EA sinon
+# (le Berzerk dépense de la Rage, le Gladiateur de la Gloire — voir
+# get_resource_summary).
+func get_resource_name() -> String:
+	return "PA" if has_metier("Prêtre") else "EA"
+
+# Ressources affichées pour cette unité (fiche personnage, bandeau de tour).
+func get_resource_summary(compact: bool = false) -> String:
+	var parts: Array = []
+	var special := false
+	if has_metier("Berzerk"):
+		parts.append("Rage : %d" % rage)
+		special = true
+	if has_metier("Gladiateur"):
+		parts.append("Gloire : %d" % gloire)
+		special = true
+	if not special or max_ea > 0:
+		if compact:
+			parts.append("%s : %d" % [get_resource_name(), current_ea])
+		else:
+			parts.append("%s : %d / %d" % [get_resource_name(), current_ea, max_ea])
+	return " | ".join(parts)
+
+# Codes des compétences (race + métiers), sans le « * » final.
+func get_skill_codes() -> Array:
+	var codes: Array = []
+	var sources: Array = []
+	if equipped_race != null:
+		sources.append(equipped_race.inherited_skill_codes)
+	if equipped_metier != null:
+		sources.append(equipped_metier.inherited_skill_codes)
+	for src in sources:
+		for raw in src:
+			var code: String = str(raw).rstrip("*")
+			if code != "" and not codes.has(code):
+				codes.append(code)
+	return codes
+
+# Coup décisif : réservé aux Chasseurs de primes et de monstres.
+func can_coup_decisif() -> bool:
+	return has_metier("Chasseur de primes") or has_metier("Chasseur de monstres")
+
+# Un pour tous : la prochaine « charge » de dégâts va au gladiateur protecteur.
+func _redirect_damage(amount: int, is_critical_hit: bool) -> bool:
+	var src = redirect_source
+	if redirect_charges <= 0 or src == null or not is_instance_valid(src) or src.current_hp <= 0:
+		_clear_redirect()
+		return false
+	redirect_charges -= 1
+	print("%s encaisse à la place de %s (Un pour tous)." % [src.unit_name, unit_name])
+	if redirect_charges <= 0:
+		_clear_redirect()
+	src.take_damage(amount, is_critical_hit)
+	return true
+
+func _clear_redirect() -> void:
+	var src = redirect_source
+	var eff = redirect_effect
+	redirect_source = null
+	redirect_charges = 0
+	redirect_effect = null
+	if src != null and is_instance_valid(src) and eff != null:
+		src.remove_status_effect(eff)
+
 func take_damage(amount: int, is_critical_hit: bool = false) -> void:
+	if amount > 0 and redirect_charges > 0 and _redirect_damage(amount, is_critical_hit):
+		return
+
 	# Immunité totale (Intangibilité, Cryogénisation...) : ignore TOUT
 	# dégât entrant, mais les soins (amount <= 0) passent toujours —
 	# rien dans les sorts concernés ne dit qu'on ne peut plus être soigné.
@@ -1361,5 +1487,12 @@ func die() -> void:
 		var fps = _sprite.sprite_frames.get_animation_speed("death")
 		var duration = float(frame_count) / fps if fps > 0 else 0.5
 		await get_tree().create_timer(duration).timeout
+
+	if keep_corpse:
+		# Cadavre conservé pour une éventuelle résurrection (voir HexGrid).
+		visible = false
+		if get_parent() != null:
+			get_parent().remove_child(self)
+		return
 
 	queue_free()

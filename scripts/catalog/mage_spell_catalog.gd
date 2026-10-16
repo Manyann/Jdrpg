@@ -518,7 +518,7 @@ func _build_er_be() -> Spell:
 	s.elements = ["Terre", "Feu"]
 	s.ea_cost = 3
 	s.spell_type = Spell.SpellType.PSYCHIC
-	s.target_mode = Spell.TargetMode.BATTLEFIELD  # Toutes les unités du champ de bataille, les deux camps.
+	s.target_mode = Spell.TargetMode.BATTLEFIELD  # Les deux camps, dans le rayon battlefield_radius.
 	s.min_range = 1
 	s.max_range = 6  # Portée non précisée par le catalogue d'origine — 1 à 6 par défaut.
 	s.requires_missing_nyctalopie = true
@@ -1203,6 +1203,7 @@ func _build_d_tection_de_zone() -> Spell:
 	s.min_range = 1
 	s.max_range = 6  # Portée non précisée par le catalogue d'origine — 1 à 6 par défaut.
 	s.reveals_invisible = true
+	s.battlefield_radius = 2  # Ne révèle que dans un rayon de 2 cases autour du lanceur.
 	# SIMPLIFICATION ASSUMÉE : "pièges, magie, cachettes" ne correspond à
 	# rien dans notre système (pas de pièges) — seule la révélation
 	# d'invisibilité (personnes) est fonctionnelle.
@@ -1233,6 +1234,102 @@ func _build_fracture_sysmique() -> Spell:
 	s.cast_delay = 2
 	s.dice_terms = [{"count": 6, "sides": 6, "modifier": 6}]
 	return s
+
+const SPELL_LEVELS := {
+	"Boule de feu mineure": 1,
+	"Aura de feu": 1,
+	"Cone de feu": 2,
+	"Boule de feu majeure": 2,
+	"Feu follet": 3,
+	"Phoenix": 4,
+	"Prométhée (Elementaire de feu)": 5,
+	"Soin mineur": 1,
+	"Restauration PA": 1,
+	"Mur d eau": 2,
+	"Purge": 2,
+	"Soin majeur": 3,
+	"Ras de marée": 4,
+	"Alizé": 1,
+	"Mistral": 1,
+	"Zéphir": 2,
+	"Libeccio": 2,
+	"Suêtes": 3,
+	"Bise": 3,
+	"Eurus": 4,
+	"Armure de terre": 1,
+	"Poings de terre": 1,
+	"Soldat de terre": 2,
+	"Pluie de pierre": 3,
+	"Golem de pierre": 3,
+	"Météore": 4,
+	"Evaporation d'eau": 1,
+	"Jet d'eau brulante": 1,
+	"Nuage de vapeur": 2,
+	"Evaporation de l'eau d'un corps": 3,
+	"Geyser": 4,
+	"Bombe volcanique": 1,
+	"Erèbe": 1,
+	"Hephaistos": 2,
+	"Nuée ardente": 2,
+	"Pluie pyroclastique": 3,
+	"Royaume des enfers": 4,
+	"Arges": 1,
+	"Enchantement": 1,
+	"Vajra": 2,
+	"Flash": 2,
+	"Eclair en chaine": 3,
+	"Brontes": 3,
+	"Steropes": 4,
+	"Tapis de ronce": 1,
+	"Lasso de lianes": 1,
+	"Immobilisation": 2,
+	"Revitalisation": 2,
+	"Jeune Ent": 3,
+	"Ent adulte": 4,
+	"Jet de poussiere": 1,
+	"Ecran de poussiere": 1,
+	"Jet de poussiere majeur": 2,
+	"Particule de poussiere": 3,
+	"Nuage de poussière": 4,
+	"Pic de glace": 1,
+	"Sol de glace": 1,
+	"Volée de glace": 2,
+	"Gel de l'eau": 2,
+	"Cryogénisation": 3,
+	"Yeti": 3,
+	"Ere glaciaire": 4,
+	"Clone de brûme": 1,
+	"Invisibilité": 2,
+	"Intangibilité": 3,
+	"Marchant de sable": 1,
+	"Homme de sable": 2,
+	"Sablage": 3,
+	"Renforcement d'armes": 1,
+	"Epée de Damocles": 2,
+	"Armure de trythil": 3,
+	"Détection de zone": 1,
+	"Onde de choc": 2,
+	"Fracture sysmique": 3,
+	"Pont végétal": 3,
+}
+
+## Niveau du mage requis : simple (1 élément) = niveau du sort ;
+## double = max(4, niveau du sort + 2) ; triple = max(7, niveau du sort + 4).
+static func required_mage_level(spell) -> int:
+	var spell_level: int = SPELL_LEVELS.get(spell.spell_name, 1)
+	var count: int = spell.elements.size()
+	if count >= 3:
+		return maxi(7, spell_level + 4)
+	if count == 2:
+		return maxi(4, spell_level + 2)
+	return spell_level
+
+static func build_for_level(mage_level: int) -> Array:
+	var result: Array = []
+	for spell in build_all():
+		if required_mage_level(spell) <= mage_level:
+			result.append(spell)
+	return result
 
 static func build_all() -> Array:
 	var catalog := MageSpellCatalog.new()

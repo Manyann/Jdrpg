@@ -15,6 +15,7 @@ class_name StatusEffect
 # ============================================================
 
 @export var effect_name: String = "Effet"
+var source_ref = null  # Unité à l'origine de l'effet (aura du Méca Tanker).
 
 ## -1 = permanent (jusqu'à la fin du combat, ou retrait manuel).
 ## N > 0 = décrémenté de 1 au début de CHAQUE tour de l'unité qui le

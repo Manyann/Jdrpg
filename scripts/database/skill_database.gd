@@ -384,6 +384,27 @@ static func _build_tdm() -> Skill:
 
 const CODES: Array = ["AM", "AG", "ADR", "ADT", "ADV", "ADB", "AEC", "ALM", "BP", "BDD", "CDG", "CDN", "CH", "CHO", "CLA", "CU", "DS", "DE", "DET", "ER", "ES", "FA", "FDP", "IDS", "IDT", "IN", "JED", "LDM", "ME", "MEP", "NA", "NT", "PE", "PI", "PS", "RA", "RE", "RAR", "RB", "SDP", "SE", "TV", "TC", "TDP", "TDM"]
 
+# Effet réel de la compétence en combat (« Aucun effet en combat » si elle ne
+# sert qu'en exploration).
+const COMBAT_EFFECTS: Dictionary = {
+	"AM": "permet de porter deux armes de corps à corps (une attaque par main).",
+	"ADR": "quitter le corps à corps d'un ennemi ne déclenche pas son attaque d'opportunité imparable.",
+	"ADB": "permet d'utiliser les armes à deux mains.",
+	"ALM": "les monstres vous attaquent en priorité.",
+	"BP": "+1 dégât à mains nues.",
+	"CDN": "joue en premier (à égalité, ordre par Courage).",
+	"DS": "+1 PM de base.",
+	"DET": "bouton « Détecter » : 3 charges, test d'Intelligence + 2 ; révèle les unités invisibles à 2 cases ou moins (pièges à venir).",
+	"PS": "à la fin d'un combat gagné, rend 1D+1 PV à chaque personne du groupe.",
+	"RE": "à la fin d'un combat gagné, rend 1D+1 EA à chaque personne du groupe.",
+	"TC": "permet d'utiliser les armes à distance.",
+	"TV": "+1 armure magique de base.",
+	"TDM": "+1 armure physique de base.",
+}
+
+static func combat_effect(code: String) -> String:
+	return str(COMBAT_EFFECTS.get(code, "aucun effet."))
+
 static func build(code: String) -> Skill:
 	match code:
 		"AM":

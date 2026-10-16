@@ -162,10 +162,8 @@ static func _build_grace_du_ciel() -> Spell:
 	s.spell_name = "Grâce du ciel"
 	s.target_mode = Spell.TargetMode.SINGLE_ALLY
 	s.is_walkyrie_resurrection = true
-	s.is_unimplemented = true
-	s.info_text = "Ressuscite un allié mort. Coût : tombe à 15 PV, perd 15 PV MAX initiaux et 1 caractéristique aléatoire. PAS IMPLÉMENTÉ (pas de système de résurrection chez nous)."
-	s.min_range = 1
-	s.max_range = 6
+	s.ea_cost = 0  # Aucun coût pour la Walkyrie : le prix est payé par le ressuscité.
+	s.info_text = "Ressuscite un allié mort (au choix). Il revient à 15 PV. La Walkyrie perd 15 PV MAX et 1 point d'une caractéristique aléatoire."
 	return s
 
 # Construit la liste de sorts pour un métier de cette branche —

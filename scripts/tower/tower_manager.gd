@@ -131,6 +131,10 @@ class TowerCharacter:
 	var metier_code_l7: String = ""
 	var metier_code_l10: String = ""
 
+	## Ordre du Prêtre (sorts de l'Ordre choisi seulement) ; sans effet si le
+	## personnage n'a pas le métier Prêtre.
+	var pretre_order: String = "Ordre de l'harmonie"
+
 	var equipped_weapon: Weapon = null
 
 	## Arme de la SECONDE main : seulement pour un personnage qui peut combattre
@@ -1366,6 +1370,14 @@ func get_metier_chain_codes(index: int) -> Array:
 	if index < 0 or index >= team.size():
 		return []
 	return _chain_codes(index, MAX_LEVEL)
+
+# Vrai si l'aventurier a le métier Prêtre (code "PR") dans sa filière.
+func has_pretre(index: int) -> bool:
+	return get_metier_chain_codes(index).has("PR")
+
+func set_pretre_order(index: int, order: String) -> void:
+	if index >= 0 and index < team.size():
+		team[index].pretre_order = order
 
 # Démarre l'ascension : étage 1, tout le monde en forme, puis charge la
 # scène de combat. Renvoie "" si tout va bien, sinon une explication à

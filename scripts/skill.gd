@@ -27,5 +27,13 @@ class_name Skill
 ## un futur système d'activation si besoin.
 @export var skill_type: String = "passif"
 
+# Infobulle : nom, type, description d'origine et effet réel en combat.
+func get_tooltip_text() -> String:
+	var lines: Array = ["%s (%s)" % [skill_name, skill_type], description]
+	var effect: String = SkillDatabase.combat_effect(code)
+	lines.append("")
+	lines.append("En combat : " + effect)
+	return "\n".join(lines)
+
 func get_display_text() -> String:
 	return "%s (%s) : %s" % [skill_name, skill_type, description]

@@ -661,7 +661,7 @@ func _populate_skills_tab() -> void:
 	for spell in spells:
 		var slot = Button.new()
 		slot.text = spell.get_icon_text()
-		slot.tooltip_text = spell.get_display_text()
+		slot.tooltip_text = spell.get_tooltip_text()
 		slot.custom_minimum_size = Vector2(0, 36)
 		slot.disabled = true  # Consultation seulement pour l'instant, hors combat.
 		_panel_content_container.add_child(slot)

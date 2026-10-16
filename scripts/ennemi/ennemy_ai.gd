@@ -136,7 +136,7 @@ static func _score_attack(spell, target, distance: int, move_cost: int) -> float
 static func _get_targets(grid, unit) -> Array:
 	var targets: Array = []
 	for other in grid.get_all_units():
-		if other.team != unit.team and other.current_hp > 0 and not other.is_untargetable:
+		if other.team != unit.team and other.current_hp > 0 and not other.is_untargetable and grid.can_interact(unit, other):
 			targets.append(other)
 
 	# Doigt d'honneur : la cible n'a d'yeux que pour son provocateur (s'il est
@@ -209,7 +209,7 @@ static func _usable_attack_spells(unit) -> Array:
 			continue
 		if not unit.can_perform_action(spell):
 			continue
-		if unit.current_ea < spell.get_effective_ea_cost():
+		if unit.current_ea < spell.get_effective_ea_cost(unit):
 			continue
 		usable.append(spell)
 	return usable

@@ -32,6 +32,8 @@ var _ev_cost_panel: HBoxContainer
 var _ev_cost_spinbox: SpinBox
 var _ev_cost_pending_spell: Spell = null
 
+var _resurrect_panel: VBoxContainer
+var _resurrect_list: VBoxContainer
 var _stat_picker_panel: VBoxContainer
 var _stat_picker_label: Label
 var _stat_picker_buttons_row: HBoxContainer
@@ -72,6 +74,13 @@ var _stance_group: ButtonGroup
 var _stance_parry_button: Button
 var _stance_dodge_button: Button
 
+# --- Capacités à bascule (Coup décisif, Soutien du Méca Support) ---
+var _ability_row: HBoxContainer
+var _coup_decisif_button: Button
+var _support_group: ButtonGroup
+var _support_attack_button: Button
+var _support_parry_button: Button
+
 # --- Fiche personnage (haut à droite) ---
 var _char_panel: PanelContainer
 var _char_name_label: Label
@@ -80,6 +89,7 @@ var _char_hp_bar: ProgressBar
 var _char_hp_label: Label
 var _char_ea_label: Label
 var _char_stats_label: Label
+var _char_skills_box: VBoxContainer
 
 # Unité actuellement affichée dans la fiche personnage (peut être
 # n'importe quelle unité cliquée, pas forcément celle dont c'est le tour).
@@ -237,6 +247,24 @@ func _build_ui() -> void:
 
 	vbox.add_child(_stat_picker_panel)
 
+	# Sélecteur de résurrection (Grâce du ciel, L'équilibre du cycle) : liste
+	# des alliés morts, affichée au lancement du sort.
+	_resurrect_panel = VBoxContainer.new()
+	_resurrect_panel.add_theme_constant_override("separation", 4)
+	_resurrect_panel.visible = false
+	var resurrect_title = Label.new()
+	resurrect_title.text = "Qui ressusciter ?"
+	resurrect_title.add_theme_font_size_override("font_size", 13)
+	_resurrect_panel.add_child(resurrect_title)
+	_resurrect_list = VBoxContainer.new()
+	_resurrect_list.add_theme_constant_override("separation", 3)
+	_resurrect_panel.add_child(_resurrect_list)
+	var resurrect_cancel = Button.new()
+	resurrect_cancel.text = "Annuler"
+	resurrect_cancel.pressed.connect(func(): _resurrect_panel.visible = false)
+	_resurrect_panel.add_child(resurrect_cancel)
+	vbox.add_child(_resurrect_panel)
+
 	var stance_title = Label.new()
 	stance_title.text = "Posture défensive :"
 	stance_title.add_theme_font_size_override("font_size", 14)
@@ -269,6 +297,50 @@ func _build_ui() -> void:
 	_stance_dodge_button.pressed.connect(func(): _set_active_unit_stance(CombatUnit.DefensiveStance.DODGE))
 	_set_button_icon(_stance_dodge_button, "esquive")
 	stance_row.add_child(_stance_dodge_button)
+
+	# Capacités à bascule : visibles seulement pour l'unité qui les possède
+	# (voir _sync_ability_buttons).
+	_ability_row = HBoxContainer.new()
+	_ability_row.add_theme_constant_override("separation", 6)
+	_ability_row.visible = false
+	vbox.add_child(_ability_row)
+
+	_coup_decisif_button = Button.new()
+	_coup_decisif_button.text = "Coup décisif"
+	_coup_decisif_button.toggle_mode = true
+	_coup_decisif_button.tooltip_text = "Coup décisif (ON/OFF) — tes attaques d'arme ont 1 chance sur 2 de faire des dégâts doublés, sinon 0 dégât."
+	_coup_decisif_button.visible = false
+	_coup_decisif_button.toggled.connect(func(on: bool):
+		if _turn_order.is_empty():
+			return
+		_turn_order[_current_index].coup_decisif_on = on
+	)
+	_ability_row.add_child(_coup_decisif_button)
+
+	_support_group = ButtonGroup.new()
+	_support_attack_button = Button.new()
+	_support_attack_button.text = "Soutien : Attaque"
+	_support_attack_button.toggle_mode = true
+	_support_attack_button.button_group = _support_group
+	_support_attack_button.tooltip_text = "Le soutien de ce tour donne du bonus en Attaque."
+	_support_attack_button.visible = false
+	_support_attack_button.pressed.connect(func():
+		if not _turn_order.is_empty():
+			_turn_order[_current_index].meca_support_choice = "attaque"
+	)
+	_ability_row.add_child(_support_attack_button)
+
+	_support_parry_button = Button.new()
+	_support_parry_button.text = "Soutien : Parade"
+	_support_parry_button.toggle_mode = true
+	_support_parry_button.button_group = _support_group
+	_support_parry_button.tooltip_text = "Le soutien de ce tour donne du bonus en Parade."
+	_support_parry_button.visible = false
+	_support_parry_button.pressed.connect(func():
+		if not _turn_order.is_empty():
+			_turn_order[_current_index].meca_support_choice = "parade"
+	)
+	_ability_row.add_child(_support_parry_button)
 
 	var bottom_row = HBoxContainer.new()
 	bottom_row.add_theme_constant_override("separation", 8)
@@ -346,6 +418,11 @@ func _build_character_panel(canvas: CanvasLayer) -> void:
 	_char_stats_label.add_theme_font_size_override("font_size", 13)
 	_char_stats_label.modulate = Color(0.85, 0.85, 0.85)
 	char_vbox.add_child(_char_stats_label)
+
+	# Compétences (race + métiers) : une ligne par compétence, détail au survol.
+	_char_skills_box = VBoxContainer.new()
+	_char_skills_box.add_theme_constant_override("separation", 2)
+	char_vbox.add_child(_char_skills_box)
 
 	_render_character_panel()  # État initial : placeholder "aucune unité".
 
@@ -555,6 +632,9 @@ func _start_current_turn() -> void:
 	if not is_instance_valid(unit) or unit.current_hp <= 0:
 		return  # Morte entre-temps (ex: Brûlure) — le retrait du tour s'en occupe déjà.
 
+	# Plan parallèle (Prêtre) : décompte des tours d'isolement de cette unité.
+	_hex_grid.tick_parallel_plane(unit)
+
 	# Étourdie (Mistral, Marchand de sable) ou gelée (Cryogénisation) :
 	# son tour passe intégralement, sans qu'elle puisse rien faire.
 	if unit.stunned_turns_remaining > 0 or unit.is_frozen:
@@ -615,6 +695,9 @@ func _set_player_controls_enabled(enabled: bool) -> void:
 	_inventory_button.disabled = not enabled
 	_stance_parry_button.disabled = not enabled
 	_stance_dodge_button.disabled = not enabled
+	_coup_decisif_button.disabled = not enabled
+	_support_attack_button.disabled = not enabled
+	_support_parry_button.disabled = not enabled
 
 # Joue le tour d'une unité ennemie via l'IA, puis passe la main. Coroutine :
 # lancée sans `await` depuis _start_current_turn, elle rend la main à la
@@ -678,7 +761,7 @@ func _update_ui() -> void:
 	var unit = _turn_order[_current_index]
 	var team_label = "Joueur" if unit.team == CombatUnit.Team.PLAYER else "Ennemi"
 	var floor_prefix: String = ("Étage %d — " % TowerManager.current_floor) if TowerManager.run_active else ""
-	var resource_text: String = ("Rage: %d" % unit.rage) if unit.has_metier("Berzerk") else ("EA: %d" % unit.current_ea)
+	var resource_text: String = unit.get_resource_summary(true)
 	_turn_label.text = floor_prefix + "Tour de : %s (%s) — PM: %d | %s" % [
 		unit.unit_name, team_label, unit.current_pm, resource_text
 	]
@@ -692,6 +775,7 @@ func _update_ui() -> void:
 	_rebuild_spell_buttons(unit)
 	_render_character_panel()
 	_sync_stance_buttons(unit)
+	_sync_ability_buttons(unit)
 
 # Applique la posture défensive choisie à l'unité actuellement active
 # (celle dont c'est le tour — seule autorisée à choisir sa posture).
@@ -709,6 +793,46 @@ func _sync_stance_buttons(unit) -> void:
 	else:
 		# Par défaut (et dans tous les autres cas) : Parade.
 		_stance_parry_button.button_pressed = true
+
+# Affiche les capacités à bascule de l'unité active (Coup décisif pour les
+# Chasseurs de primes/monstres, choix Attaque/Parade du Méca Support).
+func _sync_ability_buttons(unit) -> void:
+	var has_decisif: bool = unit.can_coup_decisif()
+	_coup_decisif_button.visible = has_decisif
+	_coup_decisif_button.set_pressed_no_signal(unit.coup_decisif_on)
+	_support_attack_button.visible = unit.is_meca_support
+	_support_parry_button.visible = unit.is_meca_support
+	if unit.meca_support_choice == "parade":
+		_support_parry_button.set_pressed_no_signal(true)
+	else:
+		_support_attack_button.set_pressed_no_signal(true)
+	_ability_row.visible = has_decisif or unit.is_meca_support
+
+# Liste des compétences de l'unité dans la fiche personnage.
+func _render_skill_list(unit) -> void:
+	for child in _char_skills_box.get_children():
+		child.queue_free()
+	var codes: Array = unit.get_skill_codes()
+	if codes.is_empty():
+		_char_skills_box.visible = false
+		return
+	_char_skills_box.visible = true
+	var title := Label.new()
+	title.text = "Compétences :"
+	title.add_theme_font_size_override("font_size", 13)
+	title.modulate = Color(0.95, 0.85, 0.5)
+	_char_skills_box.add_child(title)
+	for code in codes:
+		var skill = SkillDatabase.build(code)
+		if skill == null:
+			continue
+		var label := Label.new()
+		label.text = "• " + skill.skill_name
+		label.add_theme_font_size_override("font_size", 12)
+		label.modulate = Color(0.85, 0.85, 0.85)
+		label.mouse_filter = Control.MOUSE_FILTER_STOP
+		label.tooltip_text = skill.get_tooltip_text()
+		_char_skills_box.add_child(label)
 
 # Appelée depuis HexGrid après un cast de sort, pour rafraîchir
 # l'affichage de l'EA restante sans changer de tour.
@@ -766,9 +890,9 @@ func _rebuild_spell_buttons(unit) -> void:
 			button.text = spell.get_icon_text()
 			button.custom_minimum_size = Vector2(48, 48)
 			button.add_theme_font_size_override("font_size", 22)
-		button.tooltip_text = spell.get_display_text()  # Affiché nativement au survol par Godot.
+		button.tooltip_text = spell.get_tooltip_text(unit)  # Coût + effet, affiché au survol par Godot.
 
-		var can_afford = unit.current_ea >= spell.get_effective_ea_cost()
+		var can_afford = unit.current_ea >= spell.get_effective_ea_cost(unit)
 		var can_act = unit.can_perform_action(spell)
 		button.disabled = not (can_afford and can_act)
 
@@ -813,6 +937,19 @@ func show_zone_hint(should_show: bool) -> void:
 # (voir Spell.is_ev_cost_spell) : ouvre le sélecteur, borné entre
 # min_x et max_x (déjà plafonné par HexGrid à current_hp - 1 pour que
 # le lanceur ne puisse jamais tomber à 0 PV en lançant).
+func show_resurrection_picker(spell: Spell, corpses: Array) -> void:
+	for child in _resurrect_list.get_children():
+		child.queue_free()
+	for corpse in corpses:
+		var btn := Button.new()
+		btn.text = "%s (PV max %d)" % [corpse.unit_name, corpse.max_hp]
+		btn.pressed.connect(func():
+			_resurrect_panel.visible = false
+			_hex_grid.confirm_resurrection(spell, corpse)
+		)
+		_resurrect_list.add_child(btn)
+	_resurrect_panel.visible = true
+
 func show_ev_cost_picker(spell: Spell, min_x: int, max_x: int) -> void:
 	_ev_cost_pending_spell = spell
 	_ev_cost_spinbox.min_value = min_x
@@ -908,11 +1045,10 @@ func _render_character_panel() -> void:
 	_char_hp_bar.value = unit.current_hp
 	_char_hp_label.text = "PV : %d / %d" % [unit.current_hp, unit.max_hp]
 
-	# Le Berzerk n'a pas d'EA : sa ressource est la Rage.
-	if unit.has_metier("Berzerk"):
-		_char_ea_label.text = "Rage : %d" % unit.rage
-	else:
-		_char_ea_label.text = "EA : %d / %d" % [unit.current_ea, unit.max_ea]
+	# Ressource propre à la classe : Rage (Berzerk), Gloire (Gladiateur),
+	# PA (Prêtre), EA sinon.
+	_char_ea_label.text = unit.get_resource_summary()
+	_render_skill_list(unit)
 
 	_char_stats_label.text = (
 		"Courage : %d\n" +

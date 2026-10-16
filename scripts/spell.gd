@@ -211,6 +211,22 @@ var effect_to_apply: StatusEffect = null
 ## Compétence Détecter (DET) : 3 charges par combat, test d'Intelligence+2
 ## avant de révéler (voir HexGrid._cast_spell).
 @export var is_detect_skill: bool = false
+## Plan parallèle (Prêtre) : le joueur choisit DEUX unités (2 clics) ; pendant
+## `parallel_plane_turns` tours de chacune, elles ne peuvent plus interagir
+## qu'entre elles (voir HexGrid.can_interact).
+@export var is_parallel_plane: bool = false
+@export var parallel_plane_turns: int = 5
+## Disque de lumière : ne touche que les ennemis tournés vers le lanceur.
+@export var requires_facing_caster: bool = false
+## Ogre : convertit X points d'AT et de PRD en X PI (voir CombatUnit.ogre_pi_converted).
+@export var is_ogre_pi: bool = false
+@export var ogre_pi_x: int = 0
+## GRRRBL (Berzerk) : X Rage -> X/10 PI, 1 fois par combat, test de Courage.
+@export var is_berzerk_grr: bool = false
+## Coût = (2 × niveau du lanceur) - 1 PA (Scalpel).
+@export var ea_cost_scales_with_level: bool = false
+## Un pour tous (Gladiateur) : redirige les 3 prochains dégâts d'un allié sur le lanceur.
+@export var is_un_pour_tous: bool = false
 @export var is_samurai_concentration: bool = false
 
 ## Bonus/malus fixe (ex: +2) au jet de toucher du sort (Intelligence +
@@ -604,8 +620,12 @@ func is_melee_range() -> bool:
 
 # Coût en EA réellement appliqué : toujours 0 pour une attaque d'arme,
 # peu importe la valeur renseignée dans ea_cost.
-func get_effective_ea_cost() -> int:
-	return 0 if is_weapon_attack else ea_cost
+func get_effective_ea_cost(caster = null) -> int:
+	if is_weapon_attack:
+		return 0
+	if ea_cost_scales_with_level and caster != null:
+		return max(1, 2 * int(caster.level) - 1)  # Scalpel : (2 × niveau) - 1.
+	return ea_cost
 
 ## Dossier des icônes d'interface (attaque d'arme, sort générique, parade,
 ## esquive, inventaire, fin de tour).
@@ -643,6 +663,223 @@ func get_icon_text() -> String:
 	return "★"  # Sort à distance / enchantement
 
 # Texte prêt à afficher dans l'UI (bouton de sort).
+# ---------- Infobulle détaillée (coût + effet) ----------
+
+static func _dice_text(terms: Array) -> String:
+	var parts: Array = []
+	var flat := 0
+	for term in terms:
+		var c: int = int(term.get("count", 0))
+		var m: int = int(term.get("modifier", 0))
+		if c > 0:
+			parts.append("%dD%d" % [c, int(term.get("sides", 6))])
+		flat += m
+	var text := " + ".join(parts)
+	if flat != 0:
+		text += (" %s %d" % ["+" if flat > 0 else "−", abs(flat)]) if text != "" else str(flat)
+	return text
+
+# Nom de la ressource que ce lanceur dépense pour ses sorts « normaux ».
+static func resource_label_for(caster) -> String:
+	return caster.get_resource_name() if caster != null else "EA"
+
+func _cost_text(caster) -> String:
+	if is_weapon_attack:
+		return "Gratuit"
+	var res: String = Spell.resource_label_for(caster)
+	if gloire_cost > 0:
+		return "%d Gloire" % gloire_cost
+	if rage_cost > 0:
+		return "%d Rage" % rage_cost
+	if is_rage_cost_spell:
+		return "X Rage (à partir de %d, au choix)" % ev_cost_min
+	if is_ev_cost_spell:
+		var text := "X PV (de %d à %d, au choix)" % [ev_cost_min, ev_cost_max]
+		if ev_extra_flat_cost > 0:
+			text += " + %d PV" % ev_extra_flat_cost
+		return text
+	if is_pa_cost_spell:
+		var text := "X %s (de %d à %d, au choix)" % [res, ev_cost_min, ev_cost_max]
+		if ev_extra_flat_cost > 0:
+			text += " + %d %s" % [ev_extra_flat_cost, res]
+		return text
+	if is_barde_tranquillo:
+		return "2 + nombre d'ennemis vivants %s" % res
+	if is_barde_meno or is_barde_slancio:
+		return "%d × (CHA − 12) %s" % [barde_cost_multiplier, res]
+	if is_initial_cost:
+		if initial_cost_is_percent:
+			return "%d%% de l'%s max (coût initial)" % [int(round(initial_cost_percent_value * 100.0)) if initial_cost_percent_value <= 1.0 else int(initial_cost_percent_value), res]
+		return "%d %s (coût initial)" % [ea_cost, res]
+	if ea_cost_scales_with_level:
+		if caster != null:
+			return "%d %s ((2 × niveau) − 1)" % [get_effective_ea_cost(caster), res]
+		return "(2 × niveau) − 1 %s" % res
+	if ea_cost <= 0:
+		return "Gratuit"
+	return "%d %s" % [ea_cost, res]
+
+func _target_text() -> String:
+	match target_mode:
+		TargetMode.SELF:
+			return "soi-même"
+		TargetMode.GROUP:
+			return "tout le groupe (lanceur compris)"
+		TargetMode.ALL_ENEMIES:
+			return "tous les ennemis" + (" tournés vers le lanceur" if requires_facing_caster else "")
+		TargetMode.BATTLEFIELD:
+			return "toutes les unités" + (" dans un rayon de %d cases" % battlefield_radius if battlefield_radius > 0 else " du champ de bataille")
+		TargetMode.SINGLE_ALLY:
+			return "un allié (ou soi-même)"
+		TargetMode.ZONE:
+			var n: int = zone_offsets.size() if not zone_offsets.is_empty() else 7
+			return "une zone de %d cases" % n
+	return "un ennemi"
+
+func _test_text() -> String:
+	match spell_type:
+		SpellType.PHYSICAL:
+			return "Intelligence + Adresse"
+		SpellType.PSYCHIC:
+			return "Intelligence + Charisme"
+		SpellType.CHANCE:
+			return "Chance"
+		SpellType.COURAGE:
+			return "Courage"
+		SpellType.INTELLIGENCE:
+			return "Intelligence"
+		SpellType.COURAGE_CHARISME:
+			return "Courage + Charisme"
+	return ""
+
+static func describe_effect(e: StatusEffect, duration_x: bool = false) -> String:
+	var bonuses: Array = []
+	var stats := {"bonus_courage": "Courage", "bonus_intelligence": "Intelligence", "bonus_charisme": "Charisme",
+		"bonus_adresse": "Adresse", "bonus_force": "Force", "bonus_chance": "Chance", "bonus_attaque": "Attaque",
+		"bonus_parade": "Parade", "bonus_armure": "Armure", "bonus_armure_magique": "Armure magique",
+		"bonus_vie": "PV max", "bonus_mana": "EA max"}
+	for key in stats:
+		var v: int = int(e.get(key))
+		if v != 0:
+			bonuses.append("%s%d %s" % ["+" if v > 0 else "−", abs(v), stats[key]])
+	if e.damage_per_tick > 0:
+		bonuses.append("%d dégâts bruts par tour" % e.damage_per_tick)
+	if e.grants_untargetable:
+		bonuses.append("invisible")
+	if e.grants_invulnerable:
+		bonuses.append("insensible aux dégâts")
+	if e.grants_frozen:
+		bonuses.append("ne peut plus bouger")
+	if e.grants_lifesteal:
+		bonuses.append("vol de vie")
+	if e.grants_next_attack_double_damage:
+		bonuses.append("prochaine attaque ×2")
+	var text: String = e.effect_name
+	if not bonuses.is_empty():
+		text += " (" + ", ".join(bonuses) + ")"
+	if duration_x:
+		text += " — X tours"
+	elif e.duration_remaining < 0:
+		text += " — jusqu'à la fin du combat"
+	else:
+		text += " — %d tour(s)" % e.duration_remaining
+	return text
+
+# Infobulle complète d'un sort : coût dans la bonne ressource (EA/PA, Rage,
+# Gloire, PV), portée, cible, test et effet. `caster` (facultatif) précise
+# la ressource et le coût exact.
+func get_tooltip_text(caster = null) -> String:
+	var lines: Array = []
+	lines.append(spell_name)
+
+	if is_weapon_attack:
+		var weapon_range := "mêlée" if is_melee_range() else "distance"
+		lines.append("Attaque d'arme de %s — gratuite" % weapon_range)
+		if source_weapon != null and source_weapon.dice_count > 0:
+			lines.append("Dégâts : %s" % Spell._dice_text([{"count": source_weapon.dice_count, "sides": 6, "modifier": source_weapon.dice_modifier}]))
+		else:
+			lines.append("Dégâts : %d" % damage)
+		lines.append("Portée : %d à %d" % [min_range, max_range])
+		return "\n".join(lines)
+
+	lines.append("Coût : " + _cost_text(caster))
+	if cast_delay > 0:
+		lines.append("Incantation : %d tour(s)" % cast_delay)
+
+	var targeting: String = "Cible : " + _target_text()
+	if target_mode in [TargetMode.SINGLE_ENEMY, TargetMode.SINGLE_ALLY, TargetMode.ZONE] and max_range > 0:
+		targeting += " — portée %d à %d" % [min_range, max_range]
+	lines.append(targeting)
+
+	var test := _test_text()
+	if test != "" and not unavoidable and not is_unimplemented:
+		lines.append("Test : " + test)
+	elif unavoidable:
+		lines.append("Ne peut pas être esquivé")
+
+	if not elements.is_empty():
+		lines.append("Éléments : " + ", ".join(elements))
+
+	if info_text != "":
+		lines.append("")
+		lines.append(info_text)
+
+	var effects: Array = []
+	var dice := Spell._dice_text(dice_terms)
+	if dice_count_equals_level:
+		dice = "1D6 par niveau du lanceur" if dice_terms.is_empty() else "%dD%d par niveau du lanceur" % [int(dice_terms[0].get("count", 1)), int(dice_terms[0].get("sides", 6))]
+	if level_multiplier > 0:
+		dice = "niveau × %d" % level_multiplier
+	if includes_caster_level and dice != "":
+		dice += " + niveau"
+	if is_heal and (dice != "" or damage != 0):
+		effects.append("%s : %s" % ["Restaure de l'EA" if restores_mana else "Soin", dice if dice != "" else str(abs(damage))])
+	elif dice != "":
+		effects.append("Dégâts : %s%s" % [dice, " (bruts)" if ignores_armor else ""])
+	elif damage_percent_of_target_hp > 0.0:
+		effects.append("Dégâts : %d%% des PV de la cible" % int(round(damage_percent_of_target_hp * 100.0 if damage_percent_of_target_hp <= 1.0 else damage_percent_of_target_hp)))
+	elif damage > 0 and info_text == "":
+		effects.append("Dégâts : %d%s" % [damage, " (bruts)" if ignores_armor else ""])
+	if effect_to_apply != null:
+		effects.append("Effet : " + Spell.describe_effect(effect_to_apply, duration_equals_x))
+	if stun_turns > 0:
+		effects.append("Étourdit la cible %d tour(s)" % stun_turns)
+	if forces_attack_on_caster_turns > 0:
+		effects.append("La cible n'attaque que le lanceur pendant %d tour(s)" % forces_attack_on_caster_turns)
+	if cleanses_effects:
+		effects.append("Retire les effets négatifs")
+	if reveals_invisible:
+		effects.append("Révèle les unités invisibles")
+	if transfers_damage_to_ally:
+		effects.append("Soigne le lanceur du montant des dégâts")
+	if creates_obstacle_line:
+		effects.append("Crée un mur (jusqu'à %d cases)" % max_terrain_cells)
+	if creates_bridge_line:
+		effects.append("Crée un pont (jusqu'à %d cases)" % max_terrain_cells)
+	if removes_obstacle_type >= 0:
+		effects.append("Retire un obstacle (jusqu'à %d cases)" % max_terrain_cells)
+	if conjures_weapon:
+		effects.append("Conjure l'arme « %s »" % conjured_weapon_name)
+	if is_summon:
+		effects.append("Invoque %s (%d PV)" % [summon_name, summon_max_hp])
+	if installs_night:
+		effects.append("Plonge le champ de bataille dans la nuit (X tours)")
+	if is_parallel_plane:
+		effects.append("Isole 2 unités l'une avec l'autre pendant %d tours" % parallel_plane_turns)
+	if is_un_pour_tous:
+		effects.append("Le lanceur perd 3 AT et encaisse les 3 prochains dégâts de l'allié")
+	if is_walkyrie_resurrection or is_pretre_resurrection:
+		effects.append("Ressuscite un allié mort")
+	if mana_to_life_ratio > 0:
+		effects.append("Chaque point dépensé donne %d PV" % mana_to_life_ratio)
+	if is_unimplemented:
+		effects.append("(Effet pas encore implémenté)")
+	if not effects.is_empty():
+		lines.append("")
+		lines.append_array(effects)
+
+	return "\n".join(lines)
+
 func get_display_text() -> String:
 	if is_weapon_attack:
 		var range_desc = "mêlée" if is_melee_range() else "distance"

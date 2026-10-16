@@ -136,6 +136,7 @@ static func _build_demi_orque() -> Race:
 static func _build_ogre() -> Race:
 	var race := Race.new()
 	race.race_name = "Ogre"
+	race.grants_ogre_pi = true
 	race.bonus_vie = 40
 	race.bonus_mana = 3
 	race.bonus_attaque = 1

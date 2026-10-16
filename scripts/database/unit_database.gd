@@ -217,7 +217,7 @@ static func get_base_stats(template_name: String) -> Dictionary:
 # Construit la liste de Resources Spell correspondant aux sorts
 # définis pour cette classe (hors attaque(s) d'arme, gérées séparément
 # via build_weapon — voir CombatUnit._ready()).
-static func build_spells(template_name: String) -> Array:
+static func build_spells(template_name: String, unit_level: int = 99) -> Array:
 	var spells: Array = []
 
 	# Le Mage a son propre catalogue complet (75 sorts, voir
@@ -226,7 +226,7 @@ static func build_spells(template_name: String) -> Array:
 	# effets à durée, invocations...). Court-circuite le reste de la
 	# fonction pour cette classe précise.
 	if template_name == "Mage":
-		return MageSpellCatalog.build_all()
+		return MageSpellCatalog.build_for_level(unit_level)
 
 	if _find_template(template_name).is_empty():
 		return spells

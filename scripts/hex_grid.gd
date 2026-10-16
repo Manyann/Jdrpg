@@ -684,7 +684,7 @@ func enter_targeting_mode(spell: Spell) -> void:
 			print("%s n'a pas assez de Gloire pour lancer %s (%d requise)." % [active_unit.unit_name, spell.spell_name, spell.gloire_cost])
 			return
 	else:
-		var ea_cost = _compute_initial_cost(active_unit, spell) if spell.is_initial_cost else spell.get_effective_ea_cost()
+		var ea_cost = _compute_initial_cost(active_unit, spell) if spell.is_initial_cost else spell.get_effective_ea_cost(active_unit)
 		if active_unit.current_ea < ea_cost:
 			print("Pas assez d'Énergie Astrale pour lancer %s." % spell.spell_name)
 			return
@@ -723,6 +723,18 @@ func enter_targeting_mode(spell: Spell) -> void:
 	if spell.is_prestidigitateur_substitution:
 		if _turn_manager != null:
 			_turn_manager.show_stat_picker_step1(spell)
+		return
+
+	# Résurrection : on propose d'abord la liste des alliés morts (voir
+	# TurnManager.show_resurrection_picker) ; la résolution reprend dans
+	# confirm_resurrection une fois le défunt choisi.
+	if spell.is_walkyrie_resurrection or spell.is_pretre_resurrection:
+		var dead_allies: Array = get_graveyard_for_team(active_unit.team)
+		if dead_allies.is_empty():
+			spawn_floating_text(active_unit.position, "Aucun allié mort", Color(0.65, 0.65, 0.65))
+			return
+		if _turn_manager != null:
+			_turn_manager.show_resurrection_picker(spell, dead_allies)
 		return
 
 	# SELF/GROUP/BATTLEFIELD n'ont pas besoin d'un clic : la ou les
@@ -827,10 +839,10 @@ func _deduct_initial_cost(caster: CombatUnit, spell: Spell) -> void:
 func confirm_substitution(spell: Spell, stat_up: String, stat_down: String) -> void:
 	var caster = active_unit
 	caster.record_action_taken(spell)
-	var ea_cost = spell.get_effective_ea_cost()
+	var ea_cost = spell.get_effective_ea_cost(active_unit)
 	caster.current_ea -= ea_cost
 	if ea_cost > 0:
-		spawn_floating_text(caster.position, "-%d EA" % ea_cost, Color(0.65, 0.45, 0.95))
+		spawn_floating_text(caster.position, "-%d %s" % [ea_cost, caster.get_resource_name()], Color(0.65, 0.45, 0.95))
 
 	var roll = randi_range(1, 20)
 	if roll >= caster.intelligence_stat:
@@ -867,8 +879,66 @@ func begin_delayed_targeting(unit: CombatUnit, spell: Spell) -> void:
 	_reset_zone_orientation()
 	queue_redraw()
 
+# ---------- Plan parallèle (Prêtre) ----------
+
+var _parallel_first: CombatUnit = null  # 1re cible choisie, en attente de la 2e.
+
+func _plane_active(u: CombatUnit) -> bool:
+	return u.parallel_turns_remaining > 0 and u.parallel_partner != null \
+		and is_instance_valid(u.parallel_partner) and u.parallel_partner.current_hp > 0
+
+# Faux si `a` et `b` sont séparés par un plan parallèle : deux unités du
+# même plan n'interagissent qu'entre elles, et plus avec personne d'autre.
+func can_interact(a: CombatUnit, b: CombatUnit) -> bool:
+	if a == b:
+		return true
+	var pa: bool = _plane_active(a)
+	var pb: bool = _plane_active(b)
+	if not pa and not pb:
+		return true
+	return pa and pb and a.parallel_partner == b and b.parallel_partner == a
+
+func _set_plane_tint(u: CombatUnit, on: bool) -> void:
+	u.modulate = Color(0.7, 0.55, 1.0, 0.75) if on else Color(1, 1, 1, 1)
+
+func _apply_parallel_plane(a: CombatUnit, b: CombatUnit, turns: int) -> void:
+	a.parallel_partner = b
+	b.parallel_partner = a
+	a.parallel_turns_remaining = turns
+	b.parallel_turns_remaining = turns
+	_set_plane_tint(a, true)
+	_set_plane_tint(b, true)
+	spawn_floating_text(a.position, "Plan parallèle (%d)" % turns, Color(0.7, 0.55, 1.0))
+	spawn_floating_text(b.position, "Plan parallèle (%d)" % turns, Color(0.7, 0.55, 1.0))
+	print("%s et %s sont isolés dans un plan parallèle pendant %d tours." % [a.unit_name, b.unit_name, turns])
+
+func _end_parallel_plane(u: CombatUnit) -> void:
+	var partner = u.parallel_partner
+	u.parallel_partner = null
+	u.parallel_turns_remaining = 0
+	_set_plane_tint(u, false)
+	if partner != null and is_instance_valid(partner):
+		partner.parallel_partner = null
+		partner.parallel_turns_remaining = 0
+		_set_plane_tint(partner, false)
+	spawn_floating_text(u.position, "Fin du plan parallèle", Color(0.7, 0.55, 1.0))
+
+# Appelée par TurnManager au début du tour de `u` : décompte propre à
+# chaque unité du plan (5 tours chacune) ; le plan se défait dès que l'une
+# arrive à 0, ou si son partenaire est mort.
+func tick_parallel_plane(u: CombatUnit) -> void:
+	if u.parallel_turns_remaining <= 0:
+		return
+	if not _plane_active(u):
+		_end_parallel_plane(u)
+		return
+	u.parallel_turns_remaining -= 1
+	if u.parallel_turns_remaining <= 0:
+		_end_parallel_plane(u)
+
 func cancel_targeting_mode() -> void:
 	_casting_spell = null
+	_parallel_first = null
 	_spell_range_cells.clear()
 	_terrain_selection_cells.clear()
 	_zone_orientation_locked = false
@@ -1087,6 +1157,23 @@ func _handle_spell_target_click(coord: Vector2i) -> void:
 	var clicked_unit = _cells[coord]["occupant"]
 	var targets: Array = []
 
+	# Plan parallèle : deux clics sur deux unités DIFFÉRENTES (n'importe quel
+	# camp, lanceur compris, sauf invisibles ennemis).
+	if _casting_spell.is_parallel_plane:
+		if clicked_unit == null or (clicked_unit.is_untargetable and clicked_unit.team != active_unit.team):
+			return
+		if not can_interact(active_unit, clicked_unit):
+			return
+		if _parallel_first == null:
+			_parallel_first = clicked_unit
+			spawn_floating_text(clicked_unit.position, "1re cible — choisis la 2e", Color(0.7, 0.55, 1.0))
+			return
+		if clicked_unit == _parallel_first:
+			return
+		targets = [_parallel_first, clicked_unit]
+		_cast_spell(active_unit, _casting_spell, targets)
+		return
+
 	match _casting_spell.target_mode:
 		Spell.TargetMode.SINGLE_ENEMY:
 			if clicked_unit == null or clicked_unit.team == active_unit.team:
@@ -1238,6 +1325,7 @@ func _attach_meca_ability(caster: CombatUnit, summon: CombatUnit, spell: Spell) 
 			buff_spell.spell_name = "Soutien (Méca Support)"
 			buff_spell.target_mode = Spell.TargetMode.SINGLE_ALLY
 			buff_spell.ea_cost = 0
+			summon.is_meca_support = true
 			buff_spell.is_meca_support_buff = true
 			buff_spell.meca_tier = tier
 			buff_spell.min_range = 1
@@ -1251,21 +1339,10 @@ func _attach_meca_ability(caster: CombatUnit, summon: CombatUnit, spell: Spell) 
 			summon.is_taunting = true
 			spawn_floating_text(summon.position, "Provoque !", Color(0.5, 0.7, 1.0))
 
-			# Aura passive (+1 PR aux N alliés les plus proches tant que
-			# le Méca est en vie) : appliquée UNE FOIS à l'invocation, en
-			# PERMANENT plutôt que vraiment liée à la survie du Méca (pas
-			# de mécanisme de "retrait à la mort d'une autre unité" chez
-			# nous) — voir le catalogue pour le détail de cette simplification.
-			var aura_count = [0, 1, 2][tier]
-			if aura_count > 0:
-				var allies = _get_team_including_self(caster).filter(func(u): return u != summon)
-				allies.sort_custom(func(a, b): return hex_distance(summon.hex_coord, a.hex_coord) < hex_distance(summon.hex_coord, b.hex_coord))
-				for i in range(min(aura_count, allies.size())):
-					var aura := StatusEffect.new()
-					aura.effect_name = "Aura du Tanker (+1 Armure)"
-					aura.duration_remaining = -1
-					aura.bonus_armure = 1
-					allies[i].add_status_effect(aura)
+			# Aura passive (+1 PR aux N alliés les plus proches tant que le Méca
+			# est en vie) : recalculée dynamiquement (voir _refresh_tanker_auras).
+			summon.tanker_aura_count = [0, 1, 2][tier]
+			_refresh_tanker_auras()
 
 		"combat":
 			pass  # Juste les stats/l'attaque naturelle — déjà posées dans _build_meca_unit.
@@ -1366,7 +1443,7 @@ func _resolve_porte_etendard(caster: CombatUnit, spell: Spell, coord: Vector2i) 
 	if roll >= avg_stat:
 		spawn_floating_text(caster.position, "Porte étendard raté", Color(0.65, 0.65, 0.65))
 		print("%s rate son test Cou/Cha pour Porte étendard (jet %d >= %.1f)." % [caster.unit_name, roll, avg_stat])
-		_refund_failed_cast(caster, spell.get_effective_ea_cost())
+		_refund_failed_cast(caster, spell.get_effective_ea_cost(caster))
 		return
 
 	spawn_floating_text(axial_to_pixel(coord), "Étendard planté !", Color(0.85, 0.75, 0.3))
@@ -1394,7 +1471,7 @@ func _resolve_peinture_de_guerre(caster: CombatUnit, spell: Spell = null) -> voi
 		spawn_floating_text(caster.position, "Peinture de guerre ratée", Color(0.65, 0.65, 0.65))
 		print("%s rate son test de Courage pour Peinture de guerre (jet %d >= %d)." % [caster.unit_name, roll, caster.courage])
 		if spell != null:
-			_refund_failed_cast(caster, spell.get_effective_ea_cost())
+			_refund_failed_cast(caster, spell.get_effective_ea_cost(caster))
 		return
 
 	var bonus = caster.level
@@ -1426,12 +1503,129 @@ func _resolve_peintre_maquillage(caster: CombatUnit, spell: Spell = null) -> voi
 		spawn_floating_text(caster.position, "Maquillage raté", Color(0.65, 0.65, 0.65))
 		print("%s rate son Maquillage (jet %d >= %.1f)." % [caster.unit_name, roll, avg_stat])
 		if spell != null:
-			_refund_failed_cast(caster, spell.get_effective_ea_cost())
+			_refund_failed_cast(caster, spell.get_effective_ea_cost(caster))
 
 # Permutation (Ninja) : échange INSTANTANÉMENT la position du lanceur
 # et d'un allié — met à jour hex_coord, la position à l'écran ET
 # l'occupation des cases (voir move_unit pour le même genre de mise à
 # jour, mais à sens unique). 3 fois max par combat.
+# Polyvalence (Ingénieur et ses évolutions) : +1 aux tests de COMPÉTENCES
+# (pas aux sorts) de tout le groupe tant qu'un allié vivant l'a.
+func get_skill_test_bonus(unit: CombatUnit) -> int:
+	for ally in _get_team_including_self(unit):
+		if ally.current_hp > 0 and ally.has_metier("Ingénieur"):
+			return 1
+	return 0
+
+# Appelée par TurnManager quand le joueur a choisi qui ressusciter.
+func confirm_resurrection(spell: Spell, corpse: CombatUnit) -> void:
+	if active_unit == null:
+		return
+	_pending_resurrection = corpse
+	_cast_spell(active_unit, spell, [active_unit])
+
+# Grâce du ciel (Walkyrie) : l'allié choisi revient à 15 PV, perd 15 PV max
+# et 1 point d'une caractéristique tirée au hasard. L'équilibre du cycle
+# (Prêtre) : l'allié choisi ET un ennemi mort au hasard reviennent à la
+# moitié de leurs PV max (valeur non précisée dans les données d'origine).
+func _resolve_resurrection(caster: CombatUnit, spell: Spell) -> void:
+	var corpse = _pending_resurrection
+	_pending_resurrection = null
+	if corpse == null or not _graveyard.has(corpse):
+		return
+
+	if spell.is_walkyrie_resurrection:
+		# Le ressuscité revient à 15 PV ; c'est la WALKYRIE qui paie : -15 PV
+		# max et -1 point d'une caractéristique tirée au hasard.
+		if _revive_unit(corpse, caster, 15, false):
+			caster.base_max_hp = max(1, caster.base_max_hp - 15)
+			var stats := ["base_courage", "base_intelligence_stat", "base_charisme_stat", "base_adresse_stat", "base_force_stat", "base_chance_stat", "base_attack_stat", "base_parade_stat"]
+			var picked: String = stats[randi() % stats.size()]
+			caster.set(picked, max(1, int(caster.get(picked)) - 1))
+			caster._recalculate_stats()
+			caster.current_hp = min(caster.current_hp, caster.max_hp)
+			spawn_floating_text(caster.position, "-15 PV max, -1 %s" % picked.trim_prefix("base_").trim_suffix("_stat"), Color(0.85, 0.5, 0.3))
+		return
+
+	_revive_unit(corpse, caster, 0, false)
+	var dead_enemies: Array = _graveyard.filter(func(u): return is_instance_valid(u) and u.team != caster.team)
+	if not dead_enemies.is_empty():
+		_revive_unit(dead_enemies[randi() % dead_enemies.size()], caster, 0, false)
+
+# Remet `corpse` en jeu sur la case libre la plus proche de `near`. `hp` = 0
+# -> moitié des PV max. `penalties` : -15 PV max de base et -1 sur une
+# caractéristique au hasard (Grâce du ciel).
+func _revive_unit(corpse: CombatUnit, near: CombatUnit, hp: int, penalties: bool) -> bool:
+	var best_cell = null
+	var best_dist := 9999
+	for coord in _cells:
+		if not _cells[coord]["is_walkable"] or is_occupied(coord):
+			continue
+		var d := hex_distance(coord, near.hex_coord)
+		if d < best_dist:
+			best_dist = d
+			best_cell = coord
+	if best_cell == null:
+		print("Plus de case libre pour ressusciter %s." % corpse.unit_name)
+		return false
+
+	if penalties:
+		corpse.base_max_hp = max(1, corpse.base_max_hp - 15)
+		var stats := ["base_courage", "base_intelligence_stat", "base_charisme_stat", "base_adresse_stat", "base_force_stat", "base_chance_stat", "base_attack_stat", "base_parade_stat"]
+		var picked: String = stats[randi() % stats.size()]
+		corpse.set(picked, max(1, int(corpse.get(picked)) - 1))
+
+	corpse.active_effects.clear()
+	corpse.stunned_turns_remaining = 0
+	corpse.redirect_source = null
+	corpse.redirect_charges = 0
+	corpse.parallel_partner = null
+	corpse.parallel_turns_remaining = 0
+	corpse.pending_spell = null
+	corpse.keep_corpse = false
+
+	corpse.hex_coord = best_cell
+	corpse.position = axial_to_pixel(best_cell)
+	corpse.visible = true
+	corpse.modulate = Color(1, 1, 1, 1)
+	if corpse.get_parent() == null:
+		add_child(corpse)
+	_cells[best_cell]["occupant"] = corpse
+	if not _all_units.has(corpse):
+		_all_units.append(corpse)
+	if not corpse.died.is_connected(_on_unit_died):
+		corpse.died.connect(_on_unit_died)
+	_graveyard.erase(corpse)
+
+	corpse._recalculate_stats()
+	var new_hp: int = hp if hp > 0 else int(ceil(corpse.max_hp / 2.0))
+	corpse.current_hp = clamp(new_hp, 1, corpse.max_hp)
+	corpse.play_animation("idle")
+
+	if _turn_manager != null:
+		_turn_manager.add_unit_to_turn_order(corpse, active_unit if active_unit != null else near)
+	spawn_floating_text(corpse.position, "Ressuscité !", Color(0.95, 0.9, 0.5))
+	print("%s est ressuscité (%d PV)." % [corpse.unit_name, corpse.current_hp])
+	_refresh_tanker_auras()
+	queue_redraw()
+	return true
+
+# Un pour tous (Gladiateur) : -3 AT pour le gladiateur tant que la protection
+# dure ; les 3 prochains dégâts de l'allié sont encaissés par le gladiateur
+# (voir CombatUnit.take_damage / _redirect_damage).
+func _resolve_un_pour_tous(caster: CombatUnit, ally: CombatUnit) -> void:
+	var malus := StatusEffect.new()
+	malus.effect_name = "Un pour tous (-3 Attaque)"
+	malus.duration_remaining = -1
+	malus.bonus_attaque = -3
+	caster.add_status_effect(malus)
+	ally.redirect_source = caster
+	ally.redirect_charges = 3
+	ally.redirect_effect = malus
+	spawn_floating_text(ally.position, "Protégé (3)", Color(0.85, 0.75, 0.3))
+	spawn_floating_text(caster.position, "-3 AT", Color(0.85, 0.5, 0.3))
+	print("%s protège %s : les 3 prochains dégâts iront au gladiateur." % [caster.unit_name, ally.unit_name])
+
 func _resolve_ninja_permutation(caster: CombatUnit, target: CombatUnit) -> void:
 	var caster_coord = caster.hex_coord
 	var target_coord = target.hex_coord
@@ -1479,13 +1673,18 @@ func _resolve_meca_doc_heal(caster: CombatUnit, target: CombatUnit, tier: int) -
 func _resolve_meca_support_buff(caster: CombatUnit, target: CombatUnit, tier: int) -> void:
 	var amount = [1, 2, 2][tier]
 
+	# Au choix du joueur à chaque tour du Méca (boutons Attaque/Parade).
+	var stat_label := "Parade" if caster.meca_support_choice == "parade" else "Attaque"
 	var buff := StatusEffect.new()
-	buff.effect_name = "Soutien du Méca (+%d Attaque)" % amount
+	buff.effect_name = "Soutien du Méca (+%d %s)" % [amount, stat_label]
 	buff.duration_remaining = 1
-	buff.bonus_attaque = amount
+	if caster.meca_support_choice == "parade":
+		buff.bonus_parade = amount
+	else:
+		buff.bonus_attaque = amount
 	if tier == 2:
 		buff.bonus_force = 1
-		buff.effect_name = "Soutien du Méca (+%d Attaque, +1 Force)" % amount
+		buff.effect_name = "Soutien du Méca (+%d %s, +1 Force)" % [amount, stat_label]
 	target.add_status_effect(buff)
 	spawn_floating_text(target.position, buff.effect_name, Color(0.6, 0.9, 0.6))
 	print("%s soutient %s." % [caster.unit_name, target.unit_name])
@@ -1506,10 +1705,10 @@ func _cast_summon_spell(caster: CombatUnit, spell: Spell, coord: Vector2i) -> vo
 
 	if not is_delayed_resolution:
 		caster.record_action_taken(spell)
-		var ea_cost = spell.get_effective_ea_cost()
+		var ea_cost = spell.get_effective_ea_cost(caster)
 		caster.current_ea -= ea_cost
 		if ea_cost > 0:
-			spawn_floating_text(caster.position, "-%d EA" % ea_cost, Color(0.65, 0.45, 0.95))
+			spawn_floating_text(caster.position, "-%d %s" % [ea_cost, caster.get_resource_name()], Color(0.65, 0.45, 0.95))
 
 	# Porte étendard (Soldat) : ne pose PAS de vraie unité — juste un
 	# test Cou/Cha, puis le buff direct aux alliés adjacents à la case
@@ -1527,6 +1726,7 @@ func _cast_summon_spell(caster: CombatUnit, spell: Spell, coord: Vector2i) -> vo
 		return
 
 	var summon = build_summon_unit(spell, caster.team, caster)
+	summon.is_summoned = true
 	place_unit_at(summon, coord)
 
 	if spell.is_meca_summon:
@@ -1604,10 +1804,10 @@ func confirm_terrain_selection() -> void:
 
 	if not is_delayed_resolution:
 		caster.record_action_taken(spell)
-		var ea_cost = spell.get_effective_ea_cost()
+		var ea_cost = spell.get_effective_ea_cost(active_unit)
 		caster.current_ea -= ea_cost
 		if ea_cost > 0:
-			spawn_floating_text(caster.position, "-%d EA" % ea_cost, Color(0.65, 0.45, 0.95))
+			spawn_floating_text(caster.position, "-%d %s" % [ea_cost, caster.get_resource_name()], Color(0.65, 0.45, 0.95))
 
 	var affected = 0
 	for c in _terrain_selection_cells:
@@ -1645,6 +1845,41 @@ func confirm_terrain_selection() -> void:
 # `targets` : toutes les unités affectées par ce lancer (1 pour un
 # ciblage simple, plusieurs pour Zone/Groupe — voir Spell.TargetMode).
 func _cast_spell(caster: CombatUnit, spell: Spell, targets: Array) -> void:
+	# Résurrection : le défunt doit avoir été choisi et être toujours au cimetière.
+	if spell.is_walkyrie_resurrection or spell.is_pretre_resurrection:
+		if _pending_resurrection == null or not _graveyard.has(_pending_resurrection):
+			_pending_resurrection = null
+			cancel_targeting_mode()
+			return
+
+	# PI d'ogre : 3 PI au maximum par combat.
+	if spell.is_ogre_pi and caster.ogre_pi_converted + spell.ogre_pi_x > 3:
+		print("%s ne peut plus convertir autant de PI (3 maximum)." % caster.unit_name)
+		cancel_targeting_mode()
+		return
+
+	# Un pour tous : il faut un allié autre que soi, pas déjà protégé.
+	if spell.is_un_pour_tous:
+		if targets.is_empty() or targets[0] == caster or targets[0].redirect_charges > 0:
+			print("%s : Un pour tous impossible sur cette cible." % caster.unit_name)
+			cancel_targeting_mode()
+			return
+
+	# Disque de lumière : seuls les ennemis tournés vers le lanceur.
+	if spell.requires_facing_caster and not targets.is_empty():
+		targets = targets.filter(func(t): return t.is_facing(caster.position))
+		if targets.is_empty():
+			spawn_floating_text(caster.position, "Personne ne regarde le lanceur", Color(0.65, 0.65, 0.65))
+			cancel_targeting_mode()
+			return
+
+	# Plan parallèle : on ne peut agir que sur les unités du même plan.
+	if not targets.is_empty() and not spell.is_parallel_plane:
+		targets = targets.filter(func(t): return can_interact(caster, t))
+		if targets.is_empty():
+			print("%s ne peut atteindre personne (plan parallèle)." % caster.unit_name)
+			cancel_targeting_mode()
+			return
 	# Ressources dédiées (Bravoure/Précision des hobbits) : vérifiées
 	# AVANT toute consommation d'action/EA — un clic sur un bouton à
 	# 0 utilisation restante ne doit rien coûter.
@@ -1701,6 +1936,10 @@ func _cast_spell(caster: CombatUnit, spell: Spell, targets: Array) -> void:
 		print("%s n'a pas assez de Rage pour %s (%d requise)." % [caster.unit_name, spell.spell_name, spell.rage_cost])
 		cancel_targeting_mode()
 		return
+	if spell.is_berzerk_grr and caster.grr_used_this_combat:
+		print("%s a déjà utilisé GRRRBL ce combat (maximum 1 fois)." % caster.unit_name)
+		cancel_targeting_mode()
+		return
 	if spell.is_berzerk_raaah and caster.raaah_used_this_combat:
 		print("%s a déjà utilisé Raaah ce combat (maximum 1 fois)." % caster.unit_name)
 		cancel_targeting_mode()
@@ -1731,12 +1970,12 @@ func _cast_spell(caster: CombatUnit, spell: Spell, targets: Array) -> void:
 		elif spell.is_initial_cost:
 			_deduct_initial_cost(caster, spell)
 		else:
-			var ea_cost = spell.get_effective_ea_cost()
+			var ea_cost = spell.get_effective_ea_cost(caster)
 			caster.current_ea -= ea_cost
 
 			# L'attaque d'arme est gratuite (0 EA) : pas la peine d'afficher "-0 EA".
 			if ea_cost > 0:
-				spawn_floating_text(caster.position, "-%d EA" % ea_cost, Color(0.65, 0.45, 0.95))
+				spawn_floating_text(caster.position, "-%d %s" % [ea_cost, caster.get_resource_name()], Color(0.65, 0.45, 0.95))
 
 	# Capacités actives propres à une race (voir Race.grants_hobbit_*/
 	# grants_samurai_*) — résolution sur-mesure, indépendante du reste
@@ -1747,14 +1986,15 @@ func _cast_spell(caster: CombatUnit, spell: Spell, targets: Array) -> void:
 	if spell.is_detect_skill:
 		caster.detect_uses -= 1
 		var detect_roll: int = randi_range(1, 20)
-		if detect_roll >= caster.intelligence_stat + 2:
+		var detect_threshold: int = caster.intelligence_stat + 2 + get_skill_test_bonus(caster)
+		if detect_roll >= detect_threshold:
 			spawn_floating_text(caster.position, "Détection ratée", Color(0.65, 0.65, 0.65))
-			print("%s rate son test de Détecter (jet %d, INT+2 %d)." % [caster.unit_name, detect_roll, caster.intelligence_stat + 2])
+			print("%s rate son test de Détecter (jet %d, seuil %d)." % [caster.unit_name, detect_roll, detect_threshold])
 			cancel_targeting_mode()
 			if _turn_manager != null:
 				_turn_manager.refresh_ui()
 			return
-		print("%s réussit son test de Détecter (jet %d, INT+2 %d), %d charge(s) restante(s)." % [caster.unit_name, detect_roll, caster.intelligence_stat + 2, caster.detect_uses])
+		print("%s réussit son test de Détecter (jet %d, seuil %d), %d charge(s) restante(s)." % [caster.unit_name, detect_roll, detect_threshold, caster.detect_uses])
 
 	if spell.is_hobbit_bravoure:
 		_resolve_hobbit_bravoure(caster, spell.bravoure_x)
@@ -1779,6 +2019,49 @@ func _cast_spell(caster: CombatUnit, spell: Spell, targets: Array) -> void:
 
 	if spell.is_meca_doc_heal:
 		_resolve_meca_doc_heal(caster, targets[0], spell.meca_tier)
+		cancel_targeting_mode()
+		if _turn_manager != null:
+			_turn_manager.refresh_ui()
+		return
+
+	if spell.is_walkyrie_resurrection or spell.is_pretre_resurrection:
+		_resolve_resurrection(caster, spell)
+		cancel_targeting_mode()
+		if _turn_manager != null:
+			_turn_manager.refresh_ui()
+		return
+
+	if spell.is_ogre_pi:
+		caster.ogre_pi_converted += spell.ogre_pi_x
+		caster.pi += spell.ogre_pi_x
+		var ogre_malus := StatusEffect.new()
+		ogre_malus.effect_name = "PI d'ogre (-%d AT/PRD)" % spell.ogre_pi_x
+		ogre_malus.duration_remaining = -1
+		ogre_malus.bonus_attaque = -spell.ogre_pi_x
+		ogre_malus.bonus_parade = -spell.ogre_pi_x
+		caster.add_status_effect(ogre_malus)
+		spawn_floating_text(caster.position, "+%d PI" % spell.ogre_pi_x, Color(0.9, 0.55, 0.2))
+		cancel_targeting_mode()
+		if _turn_manager != null:
+			_turn_manager.refresh_ui()
+		return
+
+	if spell.is_un_pour_tous:
+		_resolve_un_pour_tous(caster, targets[0])
+		cancel_targeting_mode()
+		if _turn_manager != null:
+			_turn_manager.refresh_ui()
+		return
+
+	if spell.is_parallel_plane:
+		var plane_avg: float = (caster.intelligence_stat + caster.charisme_stat) / 2.0
+		var plane_roll: int = randi_range(1, 20)
+		if plane_roll < plane_avg and targets.size() == 2:
+			_apply_parallel_plane(targets[0], targets[1], spell.parallel_plane_turns)
+		else:
+			spawn_floating_text(caster.position, "Plan parallèle raté", Color(0.65, 0.65, 0.65))
+			print("%s rate Plan parallèle (jet %d >= %.1f)." % [caster.unit_name, plane_roll, plane_avg])
+			_refund_failed_cast(caster, spell.get_effective_ea_cost(caster))
 		cancel_targeting_mode()
 		if _turn_manager != null:
 			_turn_manager.refresh_ui()
@@ -2053,13 +2336,16 @@ func _install_night(caster: CombatUnit, duration: int) -> void:
 			etre_nocturne.bonus_armure = int(unit.level / 2.0)
 			unit.add_status_effect(etre_nocturne)
 
-			var maitre_de_la_nuit := StatusEffect.new()
-			maitre_de_la_nuit.effect_name = "Maître de la nuit (nuit)"
-			maitre_de_la_nuit.duration_remaining = -1
-			maitre_de_la_nuit.bonus_vie = 15
-			maitre_de_la_nuit.bonus_attaque = 2
-			maitre_de_la_nuit.bonus_parade = 2
-			unit.add_status_effect(maitre_de_la_nuit)
+			# Maître de la nuit appartient au 2e alignement (« nuit ») :
+			# seulement à partir du niveau où il se débloque.
+			if unit.level >= PretreSpellCatalog.tier_unlock_level(1):
+				var maitre_de_la_nuit := StatusEffect.new()
+				maitre_de_la_nuit.effect_name = "Maître de la nuit (nuit)"
+				maitre_de_la_nuit.duration_remaining = -1
+				maitre_de_la_nuit.bonus_vie = 15
+				maitre_de_la_nuit.bonus_attaque = 2
+				maitre_de_la_nuit.bonus_parade = 2
+				unit.add_status_effect(maitre_de_la_nuit)
 
 	spawn_floating_text(caster.position, "La nuit tombe...", Color(0.35, 0.3, 0.55))
 	print("%s installe la nuit sur le champ de bataille (%d tour(s))." % [caster.unit_name, duration])
@@ -2110,17 +2396,23 @@ func _resolve_balance_univers(caster: CombatUnit, spell: Spell) -> void:
 		for i in range(term.get("count", 0)):
 			roll += randi_range(1, term.get("sides", 6))
 
-	for ally in _get_team_including_self(caster):
-		var healed = min(roll, ally.max_hp - ally.current_hp)
-		if healed > 0:
-			ally.current_hp += healed
-			spawn_floating_text(ally.position, "+%d" % healed, Color(0.35, 0.9, 0.5))
-
-	for enemy in _get_opposing_team(caster):
-		enemy.take_damage(roll)
-		spawn_floating_text(enemy.position, "-%d" % roll, Color(0.95, 0.3, 0.3))
-
-	print("%s invoque la balance de l'univers (%d)." % [caster.unit_name, roll])
+	# Un lancer sur deux : soin au camp du lanceur, puis dégâts au camp adverse
+	# (le premier lancer soigne).
+	if not caster.balance_next_is_damage:
+		for ally in _get_team_including_self(caster):
+			var healed = min(roll, ally.max_hp - ally.current_hp)
+			if healed > 0:
+				ally.current_hp += healed
+				spawn_floating_text(ally.position, "+%d" % healed, Color(0.35, 0.9, 0.5))
+		print("%s invoque la balance de l'univers : soin (%d)." % [caster.unit_name, roll])
+	else:
+		for enemy in _get_opposing_team(caster):
+			if not can_interact(caster, enemy):
+				continue
+			enemy.take_damage(roll)
+			spawn_floating_text(enemy.position, "-%d" % roll, Color(0.95, 0.3, 0.3))
+		print("%s invoque la balance de l'univers : dégâts (%d)." % [caster.unit_name, roll])
+	caster.balance_next_is_damage = not caster.balance_next_is_damage
 
 # Sorts à coût en PV (branche Walkyrie — voir Spell.is_ev_cost_spell) :
 # `x` a été choisi par le joueur avant l'appel (voir
@@ -2157,6 +2449,21 @@ func _resolve_ev_cost_spell(caster: CombatUnit, spell: Spell, targets: Array, x:
 		caster.berzerk_permanent_damage_bonus += permanent_bonus
 		spawn_floating_text(caster.position, "+%d dégâts permanents !" % permanent_bonus, Color(0.85, 0.2, 0.1))
 		print("%s convertit %d Rage en +%d dégâts permanents (Raaah)." % [caster.unit_name, x, permanent_bonus])
+		return
+
+	# GRRRBL (Berzerk) : X Rage -> X/10 PI pour le reste du combat, sur test
+	# de Courage (la Rage est dépensée dans tous les cas).
+	if spell.is_berzerk_grr:
+		caster.grr_used_this_combat = true
+		var grr_roll = randi_range(1, 20)
+		if grr_roll < caster.courage:
+			var gained_pi = int(x / 10.0)
+			caster.pi += gained_pi
+			spawn_floating_text(caster.position, "+%d PI !" % gained_pi, Color(0.85, 0.2, 0.1))
+			print("%s convertit %d Rage en +%d PI (GRRRBL)." % [caster.unit_name, x, gained_pi])
+		else:
+			spawn_floating_text(caster.position, "GRRRBL raté", Color(0.65, 0.65, 0.65))
+			print("%s rate GRRRBL (jet %d >= Courage %d)." % [caster.unit_name, grr_roll, caster.courage])
 		return
 
 	# Noirceur (Prêtre) : installe la nuit sur TOUT le champ de bataille
@@ -2307,7 +2614,9 @@ func _resolve_ev_cost_spell(caster: CombatUnit, spell: Spell, targets: Array, x:
 		spawn_floating_text(target.position, "-%d" % damage, Color(0.95, 0.3, 0.3))
 		print("%s touche %s avec %s (%d dégâts)." % [caster.unit_name, target.unit_name, spell.spell_name, damage])
 
-func _resolve_weapon_attack(caster: CombatUnit, spell: Spell, target: CombatUnit) -> void:
+# `unavoidable` : attaque imparable (ni parade ni esquive possibles) — utilisée
+# pour l'attaque d'opportunité quand on quitte un corps à corps (voir move_unit).
+func _resolve_weapon_attack(caster: CombatUnit, spell: Spell, target: CombatUnit, unavoidable: bool = false) -> void:
 	caster.face_direction(target.position)
 	caster.play_animation("attack" if spell.is_melee_range() else "ranged_attack")
 
@@ -2372,6 +2681,7 @@ func _resolve_weapon_attack(caster: CombatUnit, spell: Spell, target: CombatUnit
 		# Maître d'armes : une attaque RATÉE remet la série à 0.
 		if caster.has_metier("Maitre d'armes"):
 			caster.maitre_armes_streak = 0
+		caster.chain_pi = 0  # Enchaînement (Ninja) : pas de dégâts, la série retombe.
 
 		# Combo (Samurai) : la 2e attaque au CAC du tour qui rate coûte
 		# la défense (Parade/Esquive) jusqu'au prochain tour du samurai.
@@ -2422,7 +2732,7 @@ func _resolve_weapon_attack(caster: CombatUnit, spell: Spell, target: CombatUnit
 	# Touché a priori : le défenseur peut tenter de parer (mêlée
 	# seulement) s'il est en posture Parade ET que sa défense n'est pas
 	# désactivée (voir Combo/Concentration, Samurai).
-	if spell.is_melee_range() and not target.samurai_combo_disabled_defense \
+	if not unavoidable and spell.is_melee_range() and not target.samurai_combo_disabled_defense \
 			and target.defensive_stance == CombatUnit.DefensiveStance.PARRY:
 		var parry_roll = randi_range(1, 20)
 		# Face à un coup critique (jet d'attaque = 1), seul un 1 à la
@@ -2443,6 +2753,7 @@ func _resolve_weapon_attack(caster: CombatUnit, spell: Spell, target: CombatUnit
 			# Maître d'armes : une attaque PARÉE remet aussi la série à 0.
 			if caster.has_metier("Maitre d'armes"):
 				caster.maitre_armes_streak = 0
+			caster.chain_pi = 0
 
 			# Même paré, il y a eu contact au corps à corps : la
 			# contre-attaque passive (Aura de feu) se déclenche quand
@@ -2452,10 +2763,11 @@ func _resolve_weapon_attack(caster: CombatUnit, spell: Spell, target: CombatUnit
 			return
 		# Parade ratée : les dégâts normaux s'appliquent plus bas.
 
-	if _try_dodge(target, caster, is_critical):
+	if not unavoidable and _try_dodge(target, caster, is_critical):
 		# Maître d'armes : une attaque ESQUIVÉE remet aussi la série à 0.
 		if caster.has_metier("Maitre d'armes"):
 			caster.maitre_armes_streak = 0
+		caster.chain_pi = 0
 		return
 
 	# Maître d'armes : l'attaque n'a été ni ratée, ni parée, ni esquivée
@@ -2491,6 +2803,10 @@ func _resolve_weapon_attack(caster: CombatUnit, spell: Spell, target: CombatUnit
 	# Maître d'armes : +2 par cran de série (calculée plus haut, juste
 	# après le test de parade).
 	effective_damage += maitre_armes_bonus
+
+	# Points d'Impact (PI) : dégâts supplémentaires sur chaque attaque
+	# (Ogre, GRRRBL du Berzerk, Enchaînement du Ninja).
+	effective_damage += caster.pi + caster.chain_pi
 
 	# Formation (Soldat) : +1 dégât si au moins un allié (hors
 	# soi-même) est sur une case adjacente.
@@ -2544,6 +2860,16 @@ func _resolve_weapon_attack(caster: CombatUnit, spell: Spell, target: CombatUnit
 	if concentration_double:
 		effective_damage *= 2
 
+	# Coup décisif (Chasseurs de primes/monstres), bascule ON : 1 chance sur 2
+	# de dégâts doublés, sinon aucun dégât.
+	if caster.coup_decisif_on and caster.can_coup_decisif():
+		if randf() < 0.5:
+			effective_damage *= 2
+			spawn_floating_text(caster.position, "Coup décisif !", Color(0.95, 0.75, 0.2))
+		else:
+			effective_damage = 0
+			spawn_floating_text(caster.position, "Coup décisif raté", Color(0.65, 0.65, 0.65))
+
 	# Critique : dégâts ×crit_multiplier (×2 normal, ×4 avec Frappe
 	# d'énergie — voir plus haut) — se cumule avec Concentration si les
 	# deux sont actifs en même temps, pas de raison de les exclure l'un
@@ -2578,6 +2904,14 @@ func _resolve_weapon_attack(caster: CombatUnit, spell: Spell, target: CombatUnit
 
 	target.take_damage(effective_damage, is_critical)
 	spawn_floating_text(target.position, "-%d" % effective_damage, Color(0.95, 0.3, 0.3))
+
+	# Enchaînement (Ninja) : +1 PI par attaque qui inflige des dégâts, remis à
+	# 0 sinon.
+	if caster.has_metier("Ninja"):
+		if effective_damage > 0:
+			caster.chain_pi += 1
+		else:
+			caster.chain_pi = 0
 
 	print("%s touche %s avec %s (%d dégâts)." % [caster.unit_name, target.unit_name, spell.spell_name, effective_damage])
 
@@ -2699,7 +3033,7 @@ func _resolve_spell_effect(caster: CombatUnit, spell: Spell, targets: Array) -> 
 		if spell.is_initial_cost:
 			_refund_failed_initial_cost(caster)
 		elif spell.gloire_cost <= 0:
-			_refund_failed_cast(caster, spell.get_effective_ea_cost())
+			_refund_failed_cast(caster, spell.get_effective_ea_cost(caster))
 		return
 
 	# Critique (jet = 1) : double les DÉGÂTS/SOINS du sort uniquement
@@ -3064,11 +3398,26 @@ func _deal_counter_attack(defender: CombatUnit, attacker: CombatUnit) -> void:
 # Appelé automatiquement via le signal "died" émis par CombatUnit.
 # Libère sa case et la retire de la file de tours pour éviter tout
 # crash (référence à une unité détruite).
+# Unités mortes pouvant être ressuscitées (Grâce du ciel, L'équilibre du cycle).
+var _graveyard: Array = []
+var _pending_resurrection = null
+
+func get_graveyard_for_team(team: int) -> Array:
+	return _graveyard.filter(func(u): return is_instance_valid(u) and u.team == team)
+
 func _on_unit_died(unit: CombatUnit) -> void:
 	if _cells.has(unit.hex_coord) and _cells[unit.hex_coord]["occupant"] == unit:
 		_cells[unit.hex_coord]["occupant"] = null
 
 	_all_units.erase(unit)
+
+	# Cimetière : les personnages (pas les invocations) restent en mémoire
+	# pour pouvoir être ressuscités (voir _resolve_resurrection).
+	if not unit.is_summoned and not _graveyard.has(unit):
+		unit.keep_corpse = true
+		_graveyard.append(unit)
+
+	_refresh_tanker_auras()
 
 	if unit == _selected_unit:
 		_deselect_unit()
@@ -3157,7 +3506,7 @@ func build_unit(team: int, template_name: String, courage_override: int = -1) ->
 		unit.base_intelligence_stat = stats.get("intelligence", unit.base_intelligence_stat)
 		unit.base_charisme_stat = stats.get("charisme", unit.base_charisme_stat)
 		unit.base_chance_stat = stats.get("chance", unit.base_chance_stat)
-		unit.spells = UnitDatabase.build_spells(template_name)
+		unit.spells = UnitDatabase.build_spells(template_name, unit.level)
 		unit.equipped_weapon = UnitDatabase.build_weapon(template_name, "weapon")
 		unit.off_hand_weapon = UnitDatabase.build_weapon(template_name, "weapon_off_hand")
 		unit.inventory_arrows = UnitDatabase.build_arrows(template_name)
@@ -3292,12 +3641,64 @@ func move_unit(unit: CombatUnit, target_coord: Vector2i) -> bool:
 	if not _cells.has(target_coord) or is_occupied(target_coord):
 		return false
 
+	# Quitter un corps à corps sans « Appel des renforts » (ADR) : chaque
+	# ennemi au contact dont on s'éloigne tente automatiquement une attaque
+	# imparable (ni parade ni esquive) sur nous.
+	if not unit.has_skill("ADR"):
+		_resolve_opportunity_attacks(unit, target_coord)
+		if not is_instance_valid(unit) or unit.current_hp <= 0:
+			return false
+
 	_cells[unit.hex_coord]["occupant"] = null
 	unit.hex_coord = target_coord
 	unit.move_to_pixel(axial_to_pixel(target_coord))
 	_cells[target_coord]["occupant"] = unit
 
+	_refresh_tanker_auras()
+
 	return true
+
+# Attaques d'opportunité (voir move_unit) : chaque ennemi adjacent à la case
+# de départ mais plus à la case d'arrivée, capable d'agir et armé au corps à
+# corps, attaque une fois (jet de toucher normal, imparable).
+func _resolve_opportunity_attacks(mover: CombatUnit, destination: Vector2i) -> void:
+	for enemy in _all_units.duplicate():
+		if not is_instance_valid(enemy) or enemy.team == mover.team or enemy.current_hp <= 0:
+			continue
+		if mover.current_hp <= 0:
+			return
+		if hex_distance(enemy.hex_coord, mover.hex_coord) != 1 or hex_distance(enemy.hex_coord, destination) <= 1:
+			continue
+		if enemy.stunned_turns_remaining > 0 or enemy.is_frozen or not can_interact(enemy, mover):
+			continue
+		if mover.is_untargetable:
+			continue  # L'ennemi ne voit pas un invisible partir.
+		var weapon = enemy.equipped_weapon
+		if weapon == null or weapon.max_range > 1:
+			continue
+		spawn_floating_text(enemy.position, "Attaque d'opportunité !", Color(0.9, 0.5, 0.3))
+		_resolve_weapon_attack(enemy, weapon.create_attack_spell(), mover, true)
+
+# Aura du Méca Tanker : +1 Armure aux N alliés les plus proches (N selon le
+# palier), tant que le Tanker est en vie. Recalculée à chaque déplacement,
+# invocation ou mort — on retire toutes les auras puis on les repose.
+func _refresh_tanker_auras() -> void:
+	for u in _all_units:
+		for e in u.active_effects.duplicate():
+			if e.source_ref != null and e.effect_name.begins_with("Aura du Tanker"):
+				u.remove_status_effect(e)
+	for tanker in _all_units:
+		if tanker.tanker_aura_count <= 0 or tanker.current_hp <= 0:
+			continue
+		var allies: Array = _get_team_including_self(tanker).filter(func(u): return u != tanker)
+		allies.sort_custom(func(a, b): return hex_distance(tanker.hex_coord, a.hex_coord) < hex_distance(tanker.hex_coord, b.hex_coord))
+		for i in range(min(tanker.tanker_aura_count, allies.size())):
+			var aura := StatusEffect.new()
+			aura.effect_name = "Aura du Tanker (+1 Armure)"
+			aura.duration_remaining = -1
+			aura.bonus_armure = 1
+			aura.source_ref = tanker
+			allies[i].add_status_effect(aura)
 
 # ---------- Tour de l'infini : construction des unités de combat ----------
 
@@ -3358,6 +3759,7 @@ func _build_tower_unit(index: int) -> CombatUnit:
 		unit.equipped_accessories.append(accessory.duplicate())
 
 	unit.equipped_race = RaceDatabase.build(character.race_name)
+	unit.queue_redraw()
 	var chain: Array = TowerManager.get_metier_chain_codes(index)  # niveau 1 -> le plus avancé
 	if not chain.is_empty():
 		unit.equipped_metier = MetierDatabase.build(str(chain.back()))
@@ -3365,7 +3767,7 @@ func _build_tower_unit(index: int) -> CombatUnit:
 		chain_top_first.reverse()
 		unit.forced_metier_chain = chain_top_first
 	unit.level = character.level
-	unit.pretre_order = TowerManager.DEFAULT_PRETRE_ORDER
+	unit.pretre_order = character.pretre_order
 
 	unit.set_meta("tower_index", index)  # Pour retrouver l'aventurier à la fin de l'étage.
 	return unit
@@ -3471,6 +3873,7 @@ func _build_random_race_metier_unit(team: int, courage_override: int = -1) -> Co
 	var race_names = RaceDatabase.list_all_race_names()
 	var race = RaceDatabase.build(race_names[randi() % race_names.size()])
 	unit.equipped_race = race
+	unit.queue_redraw()
 
 	# Métier : parmi ceux accessibles à CETTE race (lignée entière non
 	# interdite). Reste sans métier si aucun ne convient (improbable).

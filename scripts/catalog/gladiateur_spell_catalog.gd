@@ -59,9 +59,23 @@ static func _build_tortue() -> Spell:
 	s.effect_to_apply = buff
 	return s
 
+static func _build_un_pour_tous() -> Spell:
+	var s := Spell.new()
+	s.spell_name = "Un pour tous"
+	s.target_mode = Spell.TargetMode.SINGLE_ALLY
+	s.is_un_pour_tous = true
+	s.ea_cost = 0
+	s.gloire_cost = 0  # Aucun coût précisé dans les données d'origine.
+	s.spell_type = Spell.SpellType.PHYSICAL
+	s.info_text = "Le gladiateur perd 3 AT et encaisse à la place d'un allié les 3 prochains dégâts que celui-ci va subir."
+	s.min_range = 1
+	s.max_range = 6
+	return s
+
 static func build_all() -> Array:
 	return ClassSpellIcons.apply([
 		_build_doigt_dhonneur(),
 		_build_coup_de_bouclier(),
 		_build_tortue(),
+		_build_un_pour_tous(),
 	])

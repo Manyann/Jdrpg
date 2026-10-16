@@ -576,7 +576,35 @@ func _build_metier_block(index: int) -> Control:
 	box.add_child(caption_more)
 	for threshold in [4, 7, 10]:
 		box.add_child(_build_metier_row(index, threshold))
+	if TowerManager.has_pretre(index):
+		box.add_child(_build_pretre_order_row(index))
 	return box
+
+# Choix de l'Ordre du Prêtre (une fois le métier choisi).
+func _build_pretre_order_row(index: int) -> Control:
+	var c = TowerManager.team[index]
+	var row := HBoxContainer.new()
+	row.add_theme_constant_override("separation", 6)
+	var label := Label.new()
+	label.text = "Ordre"
+	label.custom_minimum_size = Vector2(46, 0)
+	label.add_theme_font_size_override("font_size", 12)
+	label.modulate = Color(0.75, 0.75, 0.8)
+	row.add_child(label)
+	var opt := OptionButton.new()
+	opt.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	opt.clip_text = true
+	opt.fit_to_longest_item = false
+	var orders := ["Ordre de l'harmonie", "Ordre du néant", "Ordre du cycle éternel"]
+	for o in orders:
+		opt.add_item(o)
+	opt.selected = maxi(0, orders.find(c.pretre_order))
+	opt.item_selected.connect(func(i):
+		TowerManager.set_pretre_order(index, orders[i])
+		_refresh()
+	)
+	row.add_child(opt)
+	return row
 
 func _build_metier_row(index: int, threshold: int) -> Control:
 	var row := HBoxContainer.new()

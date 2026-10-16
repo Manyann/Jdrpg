@@ -69,6 +69,8 @@ class_name Race
 @export var grants_hobbit_precision: bool = false
 @export var grants_samurai_concentration: bool = false
 @export var grants_samurai_combo: bool = false
+## Ogre : peut convertir jusqu'à 3 AT/PRD en PI (voir Spell.is_ogre_pi).
+@export var grants_ogre_pi: bool = false
 
 ## Prérequis de stats (COU/INT/CHA/AD/FO min ou max) pour pouvoir
 ## choisir cette race — PAS appliqués chez nous (pas d'écran de
