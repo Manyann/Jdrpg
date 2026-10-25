@@ -26,6 +26,43 @@ const ALIASES := {
 	"Méca Tanker": "meca_tanker",
 	"Méca Combat": "meca_dps_epee",
 	"Méca Support": "meca_buffer",
+	"Chaman indigène": "indigene",
+	"Kallikantzaroi": "gobelin",
+	"Ogre à peau bleue": "ogre",
+	"Brigand costaud": "brigand",
+	"Orque offensif": "orque",
+	"Mercenaire errant": "mercenaire",
+	"Orque d'élite": "orque",
+	"Troll berserk débile": "troll_berzerk",
+	"Indigène agressif": "indigene",
+	"Grand singe": "petit_singe",
+	"Jaguar": "jaguard",
+	"Chef de tribu indigène": "indigene",
+	"Bouc en colère": "bouc",
+	"Ogre débile": "ogre",
+	"Troll des montagnes": "troll_berzerk",
+	"Maman ours": "ours",
+	"Dragon des cimes": "dragon",
+	"Ogre mutant débile": "ogre",
+	"Troll géant maladroit": "troll_berzerk",
+	"Guerrier maudit perdu": "guerrier_maudit",
+	"Hippogriffe": "hyppogriffe",
+	"Nécrophage frénétique": "goule",
+	"Dragon de banlieue affamé": "dragon",
+	"Squelette d'aventurier": "squelette",
+	"Goule ancienne": "goule",
+	"Duergar": "nain",
+	"Guerrier maudit affaibli": "guerrier_maudit",
+	"Rübezahl": "ogre",
+	"Golem de cristal primordial": "golem_de_cristal",
+	"Troll des Tréfonds": "troll_berzerk",
+	"Ver-dragon": "vouivre",
+	"Garde de la pyramide": "gardien_de_pyramide",
+	"Esclavagiste": "mercenaire",
+	"Prométhée (Elementaire de feu)": "elementaire_de_feu",
+	"Ent protecteur": "ent",
+	"Jeune Ent": "ent",
+	"Ent adulte": "ent",
 }
 
 
@@ -79,3 +116,7 @@ static func texture_for(unit) -> Texture2D:
 	if ALIASES.has(uname):
 		return _load(ALIASES[uname])
 	return _load(slug(uname))
+
+## Token par nom (race, ennemi...) — pour les listes de l'interface.
+static func texture_by_name(display_name: String) -> Texture2D:
+	return _load(slug(display_name))

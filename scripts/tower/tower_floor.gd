@@ -101,6 +101,10 @@ static func get_floor_layout(floor_number: int) -> Dictionary:
 		"void": Array(source.get("void", [])),
 	}
 
+# Pièges ennemis de l'étage : ids de TrapDatabase, posés au hasard au sol.
+static func get_floor_traps(floor_number: int) -> Array:
+	return Array(_layout_source(floor_number).get("traps", []))
+
 # Mode de placement de l'étage : "classic" (défaut) ou "ambush".
 static func get_floor_mode(floor_number: int) -> String:
 	return str(_layout_source(floor_number).get("mode", "classic"))

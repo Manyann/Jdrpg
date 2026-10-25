@@ -89,6 +89,9 @@ class_name Race
 ## "Arbalètes") — pas encore vérifiées par la boutique/l'équipement.
 @export var equipment_restrictions: Array = []
 
+## Modificateur de PM de base de la race (Centaure +1, Hobbit -1), ajouté aux 3 PM de départ.
+@export var pm_modifier: int = 0
+
 ## Codes courts de compétences innées (ex: "ADB", "BP"...) — catalogue
 ## pas encore fourni, stockés sans effet mécanique pour l'instant.
 @export var inherited_skill_codes: Array = []

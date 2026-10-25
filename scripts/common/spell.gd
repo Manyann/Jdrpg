@@ -38,7 +38,8 @@ class_name Spell
 ## COURAGE_CHARISME (voir Soldat, "Test Cou/Cha") : moy(Courage,
 ## Charisme) — voir le calcul du jet dans HexGrid._resolve_spell_effect
 ## / _resolve_ev_cost_spell.
-enum SpellType { PHYSICAL, PSYCHIC, CHANCE, COURAGE, INTELLIGENCE, COURAGE_CHARISME }
+## NONE : aucun test, le sort réussit toujours (ex: sorts du Berzerk, du Gladiateur).
+enum SpellType { PHYSICAL, PSYCHIC, CHANCE, COURAGE, INTELLIGENCE, COURAGE_CHARISME, NONE }
 
 ## Détermine comment ce sort choisit ses cibles :
 ## - SINGLE_ENEMY : un seul ennemi, choisi au clic (comportement par
@@ -211,6 +212,11 @@ var effect_to_apply: StatusEffect = null
 ## Compétence Détecter (DET) : 3 charges par combat, test d'Intelligence+2
 ## avant de révéler (voir HexGrid._cast_spell).
 @export var is_detect_skill: bool = false
+## Pièges : poser un piège (trap_id, voir TrapDatabase) sur une case libre,
+## ou désamorcer un piège / libérer une victime sur une case ciblée.
+@export var is_trap_spell: bool = false
+@export var trap_id: String = ""
+@export var is_disarm_skill: bool = false
 ## Plan parallèle (Prêtre) : le joueur choisit DEUX unités (2 clics) ; pendant
 ## `parallel_plane_turns` tours de chacune, elles ne peuvent plus interagir
 ## qu'entre elles (voir HexGrid.can_interact).
@@ -611,6 +617,8 @@ var flat_damage_bonus: int = 0
 ## dans CombatUnit.spells, pour que le suivi "déjà utilisé ce tour"
 ## s'applique au bon emplacement et pas à chaque variante générée.
 var origin_spell: Spell = null
+## Flèche consommée au lancer de cette attaque à distance (voir TurnManager._start_ranged_attack).
+var arrow_used: Arrow = null
 
 # Vrai si la portée max est de 1 case (contact direct) — sert
 # uniquement à choisir le mot affiché ("mêlée" vs "distance"), plus
@@ -622,6 +630,12 @@ func is_melee_range() -> bool:
 # peu importe la valeur renseignée dans ea_cost.
 func get_effective_ea_cost(caster = null) -> int:
 	if is_weapon_attack:
+		return 0
+	# Sort payé dans UNE AUTRE ressource (Gloire, Rage, PV, ou PA choisi par le
+	# joueur) : aucun coût fixe en EA. Sans ça, la valeur par défaut d'ea_cost (3)
+	# bloquait ces sorts pour toute unité sans EA (Berzerk) et leur faisait payer
+	# deux fois les autres.
+	if gloire_cost > 0 or rage_cost > 0 or is_rage_cost_spell or is_ev_cost_spell or is_pa_cost_spell:
 		return 0
 	if ea_cost_scales_with_level and caster != null:
 		return max(1, 2 * int(caster.level) - 1)  # Scalpel : (2 × niveau) - 1.

@@ -114,6 +114,8 @@ class TowerCharacter:
 	## niveau pour l'instant).
 	var xp: int = 0
 	var race_name: String = ""
+	## Identifiant stable (tirages de PV/EA par niveau reproductibles, voir get_hp_ea_progression).
+	var uid: int = 0
 
 	## Points répartis PAR LE JOUEUR au-dessus de la valeur de DÉPART de
 	## la stat (valeur par défaut, ou minimum imposé par la race, voir
@@ -154,6 +156,10 @@ class TowerCharacter:
 	## emplacement, comme equipped_armor.
 	var equipped_weapon_data: Dictionary = {}
 	var equipped_off_hand_data: Dictionary = {}
+	## Armes de RÉSERVE (autant que souhaité, achetées au prix plein) : elles
+	## partent au combat dans l'inventaire et s'équipent par double-clic.
+	var spare_weapons: Array = []
+	var spare_weapons_data: Array = []
 	var equipped_armor_data: Dictionary = {}
 	var equipped_accessories_data: Array = []
 
@@ -175,6 +181,9 @@ class TowerCharacter:
 			total += equipped_weapon.price
 		if equipped_off_hand != null:
 			total += equipped_off_hand.price
+		for spare in spare_weapons:
+			if spare != null:
+				total += spare.price
 		for piece in equipped_armor.values():
 			if piece != null:
 				total += piece.price
@@ -201,6 +210,7 @@ func add_character() -> TowerCharacter:
 		return null
 	var c := TowerCharacter.new()
 	c.character_name = "Aventurier %d" % (team.size() + 1)
+	c.uid = randi()
 	c.race_name = RaceDatabase.list_all_race_names()[0]  # Les flèches de la carte font défiler les autres.
 	points_remaining -= 1
 	team.append(c)
@@ -306,6 +316,18 @@ func get_available_races() -> Array:
 # race REMET LES CARACTÉRISTIQUES À ZÉRO (nouveaux minimums/maximums) et
 # retire les métiers choisis devenus interdits ou injustifiés (voir
 # revalidate_metiers).
+# Choisit directement une race (liste de l'écran de création) : même effets
+# qu'un défilement avec cycle_race (stats remises à zéro, métiers revalidés).
+func set_race(index: int, race_name: String) -> void:
+	if index < 0 or index >= team.size():
+		return
+	var names = get_available_races()
+	var target: int = names.find(race_name)
+	if target < 0 or team[index].race_name == race_name:
+		return
+	var current: int = maxi(0, names.find(team[index].race_name))
+	cycle_race(index, (target - current + names.size()) % names.size())
+
 func cycle_race(index: int, delta: int) -> void:
 	if index < 0 or index >= team.size():
 		return
@@ -1012,6 +1034,33 @@ func buy_and_equip(index: int, item, data: Dictionary, hand: String = "main") ->
 		enforce_equipment_rules(index)
 	return true
 
+# ---------- Armes de réserve (inventaire de combat) ----------
+
+# Achète `item` (Weapon) pour la réserve du personnage : pas de limite de nombre,
+# aucune revente automatique, mais les restrictions de race/métier s'appliquent.
+func buy_spare_weapon(index: int, item, data: Dictionary) -> bool:
+	if index < 0 or index >= team.size() or item == null:
+		return false
+	if gold < item.price or get_equipment_block_reason(index, "weapons", data) != "":
+		return false
+	var c = team[index]
+	c.spare_weapons.append(item)
+	c.spare_weapons_data.append(data)
+	gold -= item.price
+	return true
+
+# Revend (plein tarif) l'arme de réserve n° `spare_index`.
+func sell_spare_weapon(index: int, spare_index: int) -> bool:
+	if index < 0 or index >= team.size():
+		return false
+	var c = team[index]
+	if spare_index < 0 or spare_index >= c.spare_weapons.size():
+		return false
+	gold += c.spare_weapons[spare_index].price
+	c.spare_weapons.remove_at(spare_index)
+	c.spare_weapons_data.remove_at(spare_index)
+	return true
+
 # ---------- Seconde arme (Ambidextrie) ----------
 #
 # Un personnage qui a l'Ambidextrie peut porter une arme dans chaque main et
@@ -1060,6 +1109,10 @@ func _is_firearm(data: Dictionary) -> bool:
 func get_off_hand_block_reason(index: int, data: Dictionary) -> String:
 	if index < 0 or index >= team.size():
 		return "Personnage introuvable"
+	if _is_two_handed(data):
+		return "Arme à 2 mains : ne se porte pas en seconde main"
+	if index < team.size() and team[index].equipped_weapon != null and _is_two_handed(team[index].equipped_weapon_data):
+		return "L'arme principale est à 2 mains"
 	if has_ambidextrie(index):
 		return ""
 	if not _is_pirate(index):
@@ -1076,7 +1129,11 @@ func get_off_hand_block_reason(index: int, data: Dictionary) -> String:
 # Pirate rompue (on a changé l'arme principale).
 func _off_hand_keep_reason(index: int) -> String:
 	var c = team[index]
-	if c.equipped_off_hand == null or has_ambidextrie(index):
+	if c.equipped_off_hand == null:
+		return ""
+	if _is_two_handed(c.equipped_off_hand_data) or (c.equipped_weapon != null and _is_two_handed(c.equipped_weapon_data)):
+		return "Arme à 2 mains"
+	if has_ambidextrie(index):
 		return ""
 	if not _is_pirate(index):
 		return "Ambidextrie perdue"
@@ -1084,9 +1141,18 @@ func _off_hand_keep_reason(index: int) -> String:
 		return "Pirate : une arme à feu ET une arme de corps à corps"
 	return ""
 
+func _is_two_handed(data: Dictionary) -> bool:
+	return str(data.get("category", "")).contains("à 2 mains")
+
 func _unequip_off_hand(c, reason: String) -> String:
 	var label: String = "%s (%s)" % [c.equipped_off_hand.weapon_name, reason]
-	gold += c.equipped_off_hand.price
+	if reason == "Arme à 2 mains":
+		# Pas de remboursement : la seconde arme passe en réserve (échangeable en combat).
+		c.spare_weapons.append(c.equipped_off_hand)
+		c.spare_weapons_data.append(c.equipped_off_hand_data)
+		label += " → réserve"
+	else:
+		gold += c.equipped_off_hand.price
 	c.equipped_off_hand = null
 	c.equipped_off_hand_data = {}
 	return label
@@ -1215,6 +1281,15 @@ func enforce_equipment_rules(index: int) -> void:
 			off_hand_reason = EquipmentRules.get_block_reason("weapons", c.equipped_off_hand_data, entries)
 		if off_hand_reason != "":
 			removed.append(_unequip_off_hand(c, off_hand_reason))
+	var s: int = c.spare_weapons.size() - 1
+	while s >= 0:
+		var spare_reason = EquipmentRules.get_block_reason("weapons", c.spare_weapons_data[s], entries)
+		if spare_reason != "":
+			removed.append("%s (%s)" % [c.spare_weapons[s].weapon_name, spare_reason])
+			gold += c.spare_weapons[s].price
+			c.spare_weapons.remove_at(s)
+			c.spare_weapons_data.remove_at(s)
+		s -= 1
 	for piece_slot in c.equipped_armor.keys():
 		var armor_reason = EquipmentRules.get_block_reason("armors", c.equipped_armor_data[piece_slot], entries)
 		if armor_reason != "":
@@ -1379,6 +1454,103 @@ func set_pretre_order(index: int, order: String) -> void:
 	if index >= 0 and index < team.size():
 		team[index].pretre_order = order
 
+
+# ---------- PV (EV) et EA : initial, métiers, gains par niveau ----------
+#
+# - PV/EA INITIAUX = ceux de la RACE (plus de base commune), sauf si un métier
+#   les redéfinit (Mage : 20 PV, 14 si non humain ; Barde : 15 EA).
+# - Chaque métier de la filière ajoute ses bonus de PV/EA (Metier.bonus_vie /
+#   bonus_mana) quand le personnage ATTEINT son palier ; ils se cumulent
+#   (Templier = Paladin + Templier).
+# - À chaque niveau gagné (2, 3, ...) : gain de la race (+3 PV +2 EA ; Hobbit
+#   +2/+2 ; Walkyrie, Ogre, Centaure +5/+1). Les métiers n'ont pas de gain
+#   par niveau propre (voir METIER_LEVEL_DICE).
+
+const RACE_LEVEL_GAINS: Dictionary = {
+	"default": [3, 2], "Hobbit": [2, 2],
+	"Walkyrie": [5, 1], "Ogre": [5, 1], "Centaure": [5, 1],
+}
+
+## Gain de dés par niveau d'un métier : {"hp": faces, "ea": faces} (1D<faces>).
+## Vide : Prêtre, Barde et Forgeron n'ont plus de gain par niveau propre (seuls
+## comptent le gain de la race et les bonus de métier). Mécanisme conservé.
+const METIER_LEVEL_DICE: Dictionary = {}
+
+## Bonus fixes en plus de bonus_vie / bonus_mana, à l'obtention du métier.
+const METIER_EXTRA_BONUS: Dictionary = {
+	"LC": {"hp": 5},   # Légion céleste : EV +5
+}
+
+func get_hp_ea_progression(index: int) -> Dictionary:
+	if index < 0 or index >= team.size():
+		return {"hp": 1, "ea": 0, "detail": ""}
+	var c = team[index]
+	var race = _get_race(c.race_name)
+	var hp: int = int(race.bonus_vie) if race != null else 0
+	var ea: int = int(race.bonus_mana) if race != null else 0
+	var notes: Array = ["Race %s : %d PV, %d EA" % [c.race_name, hp, ea]]
+
+	# Filière effective : palier -> code.
+	var chain: Array = []
+	for tier in [1, 4, 7, 10]:
+		if int(tier) <= c.level and _code_at_tier(c, int(tier)) != "":
+			chain.append({"tier": int(tier), "code": _code_at_tier(c, int(tier))})
+
+	# Métier qui redéfinit l'initial.
+	for entry in chain:
+		match entry["code"]:
+			"MG":
+				hp = 20 if c.race_name == "Humain" else 14
+				notes.append("Mage : PV initiaux %d" % hp)
+			"BD":
+				ea = 15
+				notes.append("Barde : EA initiale 15")
+
+	# Bonus des métiers, à l'obtention du palier (cumulés).
+	for entry in chain:
+		var m = _get_metier(str(entry["code"]))
+		if m == null:
+			continue
+		var bh: int = int(m.bonus_vie)
+		var be: int = int(m.bonus_mana)
+		var extra: Dictionary = METIER_EXTRA_BONUS.get(entry["code"], {})
+		bh += int(extra.get("hp", 0))
+		be += int(extra.get("ea", 0))
+		if bh != 0 or be != 0:
+			hp += bh
+			ea += be
+			notes.append("%s : %+d PV, %+d EA" % [m.metier_name, bh, be])
+
+	# Gains à chaque niveau gagné.
+	var gains: Array = RACE_LEVEL_GAINS.get(c.race_name, RACE_LEVEL_GAINS["default"])
+	var level_hp: int = 0
+	var level_ea: int = 0
+	for lvl in range(2, c.level + 1):
+		level_hp += int(gains[0])
+		level_ea += int(gains[1])
+		var seen: Dictionary = {}
+		for entry in chain:
+			if int(entry["tier"]) >= lvl:
+				continue  # Métier obtenu à ce niveau ou plus tard : pas encore de gain.
+			var dice: Dictionary = METIER_LEVEL_DICE.get(entry["code"], {})
+			if dice.is_empty():
+				continue
+			var signature: String = "%s/%s" % [str(dice.get("hp", 0)), str(dice.get("ea", 0))]
+			if seen.has(signature):
+				continue
+			seen[signature] = true
+			var rng := RandomNumberGenerator.new()
+			rng.seed = hash("%d|%d|%s" % [c.uid, lvl, signature])
+			if dice.has("hp"):
+				level_hp += rng.randi_range(1, int(dice["hp"]))
+			if dice.has("ea"):
+				level_ea += rng.randi_range(1, int(dice["ea"]))
+	if c.level > 1:
+		notes.append("Gains de niveau (%d niveaux) : %+d PV, %+d EA" % [c.level - 1, level_hp, level_ea])
+	hp += level_hp
+	ea += level_ea
+	return {"hp": maxi(1, hp), "ea": maxi(0, ea), "detail": "\n".join(notes)}
+
 # Démarre l'ascension : étage 1, tout le monde en forme, puis charge la
 # scène de combat. Renvoie "" si tout va bien, sinon une explication à
 # afficher au joueur (rien n'est alors démarré).
@@ -1404,6 +1576,7 @@ func start_run() -> String:
 # Charge la scène de combat pour l'étage courant (HexGrid et
 # PlacementManager lisent run_active/current_floor au chargement).
 func _enter_current_floor() -> String:
+	autosave()  # Point de reprise : on peut quitter et reprendre au début de cet étage.
 	var path: String = WorldManager.combat_scene_path
 	var error: int = get_tree().change_scene_to_file(path)
 	if error != OK:
@@ -1487,6 +1660,187 @@ func _update_run_state_after_victory(survivors: Array) -> void:
 func _end_run() -> void:
 	last_run_floors_cleared = floors_cleared
 	run_active = false
+	if DELETE_AUTOSAVE_ON_RUN_END:
+		TowerSave.delete(TowerSave.AUTO_SLOT)  # Ascension terminée : plus rien à reprendre.
 	var error: int = get_tree().change_scene_to_file(team_select_scene_path)
 	if error != OK:
 		push_warning("TowerManager: impossible de charger '%s' (erreur %d). Vérifie/ajuste team_select_scene_path." % [team_select_scene_path, error])
+
+# ---------- Sauvegarde ----------
+#
+# Deux sortes de sauvegarde (voir TowerSave pour les emplacements et le disque) :
+#  - « équipe » : l'équipe en préparation (écran de création) ; manuelle ;
+#  - « ascension » : l'équipe ET la progression (étage, XP, état de chacun) ;
+#    écrite AUTOMATIQUEMENT au début de chaque étage (emplacement 0). On ne
+#    sauvegarde pas en plein combat : on reprend au début de l'étage en cours.
+#
+# Le matériel est sauvegardé par ses DONNÉES de catalogue (pas par son nom) :
+# une sauvegarde reste donc valable même si le catalogue change ensuite.
+
+## true : la sauvegarde automatique est effacée quand l'ascension se termine
+## (défaite) — façon roguelike. false : elle reste, et « Continuer » rejoue
+## le dernier étage atteint.
+const DELETE_AUTOSAVE_ON_RUN_END: bool = true
+
+# Contenu d'une sauvegarde (dictionnaire prêt pour le JSON).
+func to_save_dict() -> Dictionary:
+	var characters: Array = []
+	for c in team:
+		var armor: Dictionary = {}
+		for piece_slot in c.equipped_armor:
+			if c.equipped_armor[piece_slot] != null and c.equipped_armor_data.has(piece_slot):
+				armor[piece_slot] = c.equipped_armor_data[piece_slot].duplicate(true)
+		var accessories: Array = []
+		for i in range(c.equipped_accessories.size()):
+			if c.equipped_accessories[i] != null and i < c.equipped_accessories_data.size():
+				accessories.append(c.equipped_accessories_data[i].duplicate(true))
+		characters.append({
+			"name": c.character_name,
+			"level": c.level,
+			"xp": c.xp,
+			"race": c.race_name,
+			"uid": c.uid,
+			"stat_points": c.stat_points.duplicate(),
+			"metiers": [c.metier_code_l1, c.metier_code_l4, c.metier_code_l7, c.metier_code_l10],
+			"pretre_order": c.pretre_order,
+			"weapon": c.equipped_weapon_data.duplicate(true) if c.equipped_weapon != null else {},
+			"off_hand": c.equipped_off_hand_data.duplicate(true) if c.equipped_off_hand != null else {},
+			"spare_weapons": c.spare_weapons_data.duplicate(true),
+			"armor": armor,
+			"accessories": accessories,
+		})
+
+	var run_state: Array = []
+	for i in range(team.size()):
+		var state: Dictionary = _run_state.get(i, {"alive": true, "hp": 1.0, "ea": 1.0})
+		run_state.append({"alive": bool(state["alive"]), "hp": float(state["hp"]), "ea": float(state["ea"])})
+
+	var summary_team: Array = []
+	for c in team:
+		summary_team.append({"name": c.character_name, "race": c.race_name, "level": c.level})
+
+	return {
+		"version": TowerSave.VERSION,
+		"phase": "run" if run_active else "team",
+		"points_remaining": points_remaining,
+		"gold": gold,
+		"current_floor": current_floor,
+		"floors_cleared": floors_cleared,
+		"team": characters,
+		"run_state": run_state,
+		"summary": {
+			"saved_at": Time.get_datetime_string_from_system(false, true),
+			"phase": "run" if run_active else "team",
+			"floor": current_floor,
+			"team": summary_team,
+		},
+	}
+
+# Remplace l'équipe et la progression par celles de `data`. Renvoie "" si tout
+# va bien, sinon l'explication (l'état actuel n'est alors PAS modifié).
+func load_save_dict(data: Dictionary) -> String:
+	if not (data.get("team") is Array):
+		return "Sauvegarde invalide (pas d'équipe)."
+	var races: Array = RaceDatabase.list_all_race_names()
+	var loaded: Array = []
+	for entry in data["team"]:
+		if not (entry is Dictionary):
+			return "Sauvegarde invalide (personnage illisible)."
+		var race_name: String = str(entry.get("race", ""))
+		if not races.has(race_name):
+			return "Race inconnue dans la sauvegarde : « %s »." % race_name
+		var c := TowerCharacter.new()
+		c.character_name = str(entry.get("name", "Aventurier"))
+		c.level = clampi(int(entry.get("level", 1)), 1, MAX_LEVEL)
+		c.xp = maxi(0, int(entry.get("xp", 0)))
+		c.race_name = race_name
+		c.uid = int(entry.get("uid", randi()))
+		var points: Dictionary = entry.get("stat_points", {})
+		for stat in STAT_KEYS:
+			c.stat_points[stat] = maxi(0, int(points.get(stat, 0)))
+		var metiers: Array = entry.get("metiers", [])
+		if metiers.size() >= 4:
+			c.metier_code_l1 = str(metiers[0])
+			c.metier_code_l4 = str(metiers[1])
+			c.metier_code_l7 = str(metiers[2])
+			c.metier_code_l10 = str(metiers[3])
+		c.pretre_order = str(entry.get("pretre_order", DEFAULT_PRETRE_ORDER))
+
+		var weapon: Dictionary = entry.get("weapon", {})
+		if not weapon.is_empty():
+			c.equipped_weapon = ShopGenerator.build_weapon_from_data(weapon)
+			c.equipped_weapon_data = weapon
+		var off_hand: Dictionary = entry.get("off_hand", {})
+		if not off_hand.is_empty():
+			c.equipped_off_hand = ShopGenerator.build_weapon_from_data(off_hand)
+			c.equipped_off_hand_data = off_hand
+		for spare_data in entry.get("spare_weapons", []):
+			if spare_data is Dictionary and not spare_data.is_empty():
+				c.spare_weapons.append(ShopGenerator.build_weapon_from_data(spare_data))
+				c.spare_weapons_data.append(spare_data)
+		var armor: Dictionary = entry.get("armor", {})
+		for piece_slot in armor:
+			c.equipped_armor[piece_slot] = ShopGenerator.build_armor_from_data(armor[piece_slot])
+			c.equipped_armor_data[piece_slot] = armor[piece_slot]
+		for accessory_data in entry.get("accessories", []):
+			c.equipped_accessories.append(ShopGenerator.build_accessory_from_data(accessory_data))
+			c.equipped_accessories_data.append(accessory_data)
+		loaded.append(c)
+
+	team = loaded
+	points_remaining = maxi(0, int(data.get("points_remaining", 0)))
+	gold = int(data.get("gold", STARTING_GOLD))
+	current_floor = maxi(1, int(data.get("current_floor", 1)))
+	floors_cleared = maxi(0, int(data.get("floors_cleared", 0)))
+	equipment_notice = ""
+	run_active = false  # Une ascension sauvegardée se REPREND explicitement (resume_run).
+	_run_state = {}
+	var saved_state: Array = data.get("run_state", [])
+	for i in range(team.size()):
+		var state: Dictionary = saved_state[i] if i < saved_state.size() and saved_state[i] is Dictionary else {}
+		_run_state[i] = {
+			"alive": bool(state.get("alive", true)),
+			"hp": float(state.get("hp", 1.0)),
+			"ea": float(state.get("ea", 1.0)),
+		}
+	return ""
+
+# Sauvegarde dans l'emplacement (1..SLOT_COUNT). Renvoie "" ou l'erreur.
+func save_to_slot(slot: int) -> String:
+	if team.is_empty():
+		return "Rien à sauvegarder : l'équipe est vide."
+	return TowerSave.write(slot, to_save_dict())
+
+# Charge un emplacement. Renvoie "" si tout va bien, sinon l'erreur.
+# Phase « ascension » : l'équipe est restaurée ; c'est à l'appelant de proposer
+# resume_run() (voir saved_phase).
+func load_from_slot(slot: int) -> String:
+	var result: Dictionary = TowerSave.read(slot)
+	if not bool(result["ok"]):
+		return str(result["error"])
+	return load_save_dict(result["data"])
+
+# « equipe », « ascension » ou "" selon ce que contient l'emplacement.
+func saved_phase(slot: int) -> String:
+	var info: Dictionary = TowerSave.summary(slot)
+	if info.is_empty():
+		return ""
+	return "ascension" if str(info.get("phase", "team")) == "run" else "equipe"
+
+# Sauvegarde automatique (emplacement 0) : seulement pendant une ascension.
+func autosave() -> void:
+	if not run_active or team.is_empty():
+		return
+	var error: String = TowerSave.write(TowerSave.AUTO_SLOT, to_save_dict())
+	if error != "":
+		push_warning("TowerManager: sauvegarde automatique impossible : %s" % error)
+
+# Reprend l'ascension restaurée par load_from_slot, au début de son étage.
+# Renvoie "" si tout va bien, sinon l'explication.
+func resume_run() -> String:
+	if team.is_empty():
+		return "Aucune équipe à reprendre."
+	if TowerFloors.defined_floor_count() == 0:
+		return "Aucun étage n'est défini."
+	run_active = true
+	return _enter_current_floor()

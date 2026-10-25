@@ -152,6 +152,7 @@ static func _build_ogre() -> Race:
 static func _build_centaure() -> Race:
 	var race := Race.new()
 	race.race_name = "Centaure"
+	race.pm_modifier = 1  # 4 PM de base.
 	race.bonus_vie = 40
 	race.bonus_mana = 25
 	race.bonus_attaque = 1
@@ -181,13 +182,14 @@ static func _build_homme_des_sables() -> Race:
 static func _build_hobbit() -> Race:
 	var race := Race.new()
 	race.race_name = "Hobbit"
+	race.pm_modifier = -1  # 2 PM de base, et pas de Déplacement silencieux.
 	race.bonus_vie = 25
 	race.bonus_mana = 25
 	race.grants_hobbit_bravoure = true
 	race.grants_hobbit_precision = true
 	race.special_traits = ["+1D4EV level up", "Minimum 1 point destin", "Les Hobbits essayent de voler tous les anneaux qu'ils voient. Test INT +3 pour se retenir", "En l'honneur de Sam : Les Hobbits gagnent 1 COU tous les 2 niveaux"]
 	race.equipment_restrictions = ["Armes à 2 mains", "Arme de jet sauf lance pierre"]
-	race.inherited_skill_codes = ["ADT", "ADV", "CU", "DS", "ES", "IN", "MEP", "NT", "JED*"]
+	race.inherited_skill_codes = ["ADT", "ADV", "CU", "ES", "IN", "MEP", "NT", "JED*"]
 	race.profession_restriction_codes = ["PR", "VO", "RA", "IN", "DM", "MG", "GR", "FO", "FR", "WA"]
 	race.prereqs = [{"stat": "courage", "type": "min", "value": 12}, {"stat": "intelligence", "type": "min", "value": 10}, {"stat": "force", "type": "max", "value": 10}]
 	return race

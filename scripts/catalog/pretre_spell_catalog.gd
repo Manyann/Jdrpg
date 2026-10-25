@@ -317,7 +317,7 @@ static func _build_infection() -> Spell:
 static func _build_necrose() -> Spell:
 	var s := Spell.new()
 	s.spell_name = "Nécrose"
-	s.target_mode = Spell.TargetMode.SINGLE_ENEMY
+	s.target_mode = Spell.TargetMode.ALL_ENEMIES  # Touche tous les ennemis ayant au moins une infection.
 	s.ea_cost = 2
 	s.spell_type = Spell.SpellType.PSYCHIC
 	s.triggers_infections = true

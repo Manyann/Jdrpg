@@ -53,6 +53,7 @@ static func build_weapon_from_data(data: Dictionary) -> Weapon:
 	w.weapon_type = Weapon.WeaponType.RANGED if data.get("weapon_type", "melee") == "ranged" else Weapon.WeaponType.MELEE
 	w.price = data.get("price", 0)
 	w.info_text = data.get("info", "")
+	w.two_handed = str(data.get("category", "")).contains("à 2 mains")
 	_apply_bonus_fields(w, data)
 
 	# Portée par défaut selon le type — le catalogue n'a pas de portée
@@ -108,6 +109,9 @@ static func build_arrow_from_data(data: Dictionary) -> Arrow:
 	a.arrow_name = data.get("name", "Flèche")
 	a.damage_bonus = data.get("damage_bonus", 0)
 	a.price = data.get("price", 0)
+	a.effect = data.get("effect", "")
+	a.info_text = data.get("info", "")
+	a.category = data.get("category", "Fleche")
 	a.quantity = 5  # Vendues par lot de 5 (voir informations du catalogue d'origine).
 	return a
 

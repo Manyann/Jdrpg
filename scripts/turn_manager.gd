@@ -15,6 +15,14 @@ extends Node
 # ============================================================
 
 # File d'initiative : liste de CombatUnit triée par Courage décroissant.
+## Largeur (px) de la colonne « tour » de la barre du bas : les textes longs passent à la ligne
+## et les rangées de boutons se replient au lieu d'élargir le panneau.
+const PANEL_INNER_WIDTH := 300.0
+## Hauteur fixe (px) de la barre d'actions du bas.
+## Largeur commune du suivi d'équipe et du journal de combat (colonne de gauche).
+const LEFT_PANEL_WIDTH := 210.0
+const BAR_HEIGHT := 255.0
+
 var _turn_order: Array = []
 
 # Index de l'unité dont c'est le tour dans _turn_order.
@@ -25,7 +33,9 @@ var _hex_grid = null
 
 var _turn_label: Label
 var _order_label: Label
-var _spell_buttons_container: HBoxContainer
+var _order_row: HFlowContainer
+var _highlighted_unit = null
+var _spell_buttons_container: VBoxContainer
 var _terrain_confirm_button: Button
 var _zone_hint_label: Label
 var _ev_cost_panel: HBoxContainer
@@ -47,7 +57,7 @@ const STAT_OPTIONS = [
 	["bonus_charisme", "Charisme"], ["bonus_adresse", "Adresse"],
 	["bonus_force", "Force"], ["bonus_chance", "Chance"],
 ]
-var _element_filter_row: HBoxContainer
+var _element_filter_row: HFlowContainer
 
 # Couleurs des boutons de filtre élémentaire (voir _build_ui).
 const ELEMENT_FILTER_COLORS := {
@@ -67,7 +77,6 @@ var _active_element_filters: Dictionary = {}
 # cours (utile pour la fiche personnage en consultation aussi).
 var _spell_buttons_unit = null
 var _end_turn_button: Button
-var _inventory_button: Button
 
 # --- Posture défensive (choisie à son tour, active jusqu'au suivant) ---
 var _stance_group: ButtonGroup
@@ -75,7 +84,7 @@ var _stance_parry_button: Button
 var _stance_dodge_button: Button
 
 # --- Capacités à bascule (Coup décisif, Soutien du Méca Support) ---
-var _ability_row: HBoxContainer
+var _ability_row: HFlowContainer
 var _coup_decisif_button: Button
 var _support_group: ButtonGroup
 var _support_attack_button: Button
@@ -89,7 +98,7 @@ var _char_hp_bar: ProgressBar
 var _char_hp_label: Label
 var _char_ea_label: Label
 var _char_stats_label: Label
-var _char_skills_box: VBoxContainer
+var _char_skills_box: HFlowContainer  # Compétences de l'unité qui joue (barre du bas).
 
 # Unité actuellement affichée dans la fiche personnage (peut être
 # n'importe quelle unité cliquée, pas forcément celle dont c'est le tour).
@@ -101,45 +110,219 @@ var _inspected_unit = null
 var enemy_ai_enabled: bool = false
 
 # --- Popups (inventaire et choix de flèche) ---
-var _inventory_popup: PopupPanel
-var _inventory_list_container: VBoxContainer
-var _arrow_popup: PopupPanel
-var _arrow_list_container: VBoxContainer
+
+# --- Panneau d'état de l'équipe (haut gauche) ---
+var _team_panel: PanelContainer
+var _log_panel: PanelContainer
+var _bar_panel: PanelContainer
+var _log_text: RichTextLabel
+var _team_rows: VBoxContainer
+var _team_roster: Array = []  # Unités joueur du début de combat (gardées même mortes).
 
 func _ready() -> void:
 	_build_ui()
+
+func _build_team_panel(canvas: CanvasLayer) -> void:
+	_team_panel = PanelContainer.new()
+	_team_panel.theme = UITheme.build_theme()
+	_team_panel.add_theme_stylebox_override("panel", UITheme.panel_style(UITheme.GOLD_DIM, 6, 8, 0.85))
+	_team_panel.position = Vector2(12, 12)
+	_team_panel.custom_minimum_size = Vector2(LEFT_PANEL_WIDTH, 0)  # Même largeur que le journal de combat.
+	_team_panel.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	canvas.add_child(_team_panel)
+	_team_rows = VBoxContainer.new()
+	_team_rows.add_theme_constant_override("separation", 2)
+	_team_panel.add_child(_team_rows)
+
+# Journal de combat : à gauche, sous le suivi de l'équipe.
+func _build_log_panel(canvas: CanvasLayer) -> void:
+	_log_panel = PanelContainer.new()
+	_log_panel.theme = UITheme.build_theme()
+	_log_panel.add_theme_stylebox_override("panel", UITheme.panel_style(UITheme.GOLD_DIM, 6, 8, 0.85))
+	_log_panel.custom_minimum_size = Vector2(LEFT_PANEL_WIDTH, 60)
+	_log_panel.size = Vector2(LEFT_PANEL_WIDTH, 230)
+	_log_panel.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	canvas.add_child(_log_panel)
+	var box := VBoxContainer.new()
+	box.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	_log_panel.add_child(box)
+	var title := Label.new()
+	title.text = "Journal de combat"
+	title.add_theme_font_size_override("font_size", 13)
+	title.add_theme_color_override("font_color", UITheme.TITLE)
+	box.add_child(title)
+	_log_text = RichTextLabel.new()
+	_log_text.bbcode_enabled = true
+	_log_text.scroll_following = true
+	_log_text.fit_content = false
+	_log_text.size_flags_vertical = Control.SIZE_EXPAND_FILL
+	_log_text.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	_log_text.add_theme_font_size_override("normal_font_size", 12)
+	box.add_child(_log_text)
+	_team_panel.resized.connect(_place_log_panel)
+	_place_log_panel()
+
+# Garde les panneaux flottants (journal, fiche personnage) au-dessus de la barre
+# d'actions, même dans une petite fenêtre : le journal raccourcit (ou se masque
+# s'il ne reste plus de place) et la fiche se réduit pour rester entièrement visible.
+func _process(_delta: float) -> void:
+	if _bar_panel == null:
+		return
+	var top: float = _bar_panel.get_global_rect().position.y - 8.0
+	if _log_panel != null:
+		var h: float = top - _log_panel.position.y
+		_log_panel.visible = h >= 60.0
+		if _log_panel.visible:
+			_log_panel.size = Vector2(LEFT_PANEL_WIDTH, minf(h, 230.0))
+	if _char_panel != null and _char_panel.visible:
+		var need: float = _char_panel.get_combined_minimum_size().y + 16.0
+		var k: float = clampf((top - 8.0) / maxf(need, 1.0), 0.55, 1.0)
+		_char_panel.pivot_offset = Vector2(_char_panel.size.x, 0.0)
+		_char_panel.scale = Vector2(k, k)
+
+func _place_log_panel() -> void:
+	if _log_panel == null or _team_panel == null:
+		return
+	_log_panel.position = Vector2(12, _team_panel.position.y + _team_panel.size.y + 8)
+
+const _LOG_MAX_LINES: int = 120
+var _log_lines: int = 0
+
+func _on_combat_log(text: String, color: Color) -> void:
+	if _log_text == null:
+		return
+	if _log_lines >= _LOG_MAX_LINES:
+		_log_text.remove_paragraph(0)
+		_log_lines -= 1
+	_log_text.push_color(color)
+	_log_text.add_text(text)
+	_log_text.pop()
+	_log_text.newline()
+	_log_lines += 1
+
+func _refresh_team_panel() -> void:
+	if _team_rows == null:
+		return
+	if _team_roster.is_empty():
+		for u in _turn_order:
+			if u.team == CombatUnit.Team.PLAYER:
+				_team_roster.append(u)
+	for c in _team_rows.get_children():
+		c.queue_free()
+	var title := Label.new()
+	title.text = "Équipe"
+	title.add_theme_font_size_override("font_size", 13)
+	title.add_theme_color_override("font_color", UITheme.TITLE)
+	_team_rows.add_child(title)
+	for u in _team_roster:
+		var row := HBoxContainer.new()
+		row.add_theme_constant_override("separation", 6)
+		_team_rows.add_child(row)
+		var alive: bool = is_instance_valid(u) and u.current_hp > 0 and _turn_order.has(u)
+		if not is_instance_valid(u):
+			var ghost := Label.new()
+			ghost.text = "✝ (mort)"
+			ghost.modulate = Color(0.6, 0.35, 0.35)
+			row.add_child(ghost)
+			continue
+		var tok: Control = _make_order_token(u, _turn_order.size() > 0 and _turn_order[_current_index] == u)
+		if not alive:
+			tok.modulate = Color(0.45, 0.3, 0.3)
+		row.add_child(tok)
+		var l := Label.new()
+		l.add_theme_font_size_override("font_size", 13)
+		if alive:
+			l.text = "PV %d/%d\n%s" % [u.current_hp, u.max_hp, u.get_resource_summary(false)]
+		else:
+			l.text = "✝ mort"
+			l.modulate = Color(0.7, 0.4, 0.4)
+		l.vertical_alignment = VERTICAL_ALIGNMENT_CENTER
+		row.add_child(l)
 
 # Construit une UI minimale en pur code : un panneau en haut à gauche
 # avec le nom de l'unité active et le bouton pour finir son tour.
 func _build_ui() -> void:
 	var canvas = CanvasLayer.new()
 	add_child(canvas)
+	_build_team_panel(canvas)
+	_build_log_panel(canvas)
 
-	var margin = MarginContainer.new()
-	margin.set_anchors_preset(Control.PRESET_TOP_LEFT)
-	margin.position = Vector2(16, 16)
-	margin.add_theme_constant_override("margin_left", 12)
-	margin.add_theme_constant_override("margin_top", 12)
-	margin.add_theme_constant_override("margin_right", 12)
-	margin.add_theme_constant_override("margin_bottom", 12)
-	canvas.add_child(margin)
+	# Barre d'actions SOUS la grille, pleine largeur, dans le design system
+	# commun (UITheme) : tour et ordre à gauche, sorts au centre, posture et
+	# boutons de fin de tour à droite.
+	var bar_panel = PanelContainer.new()
+	bar_panel.theme = UITheme.build_theme()
+	bar_panel.add_theme_stylebox_override("panel", UITheme.panel_style(UITheme.GOLD_DIM, 8, 10, 0.92))
+	bar_panel.set_anchors_preset(Control.PRESET_BOTTOM_WIDE)
+	bar_panel.offset_left = 16
+	bar_panel.offset_right = -16
+	# Hauteur FIXE (ne s'adapte pas au contenu) : la colonne des actions défile
+	# si besoin, voir BAR_HEIGHT.
+	bar_panel.offset_top = -(BAR_HEIGHT + 12.0)
+	bar_panel.offset_bottom = -12
+	bar_panel.grow_vertical = Control.GROW_DIRECTION_BEGIN
+	bar_panel.clip_contents = true
+	canvas.add_child(bar_panel)
+	_bar_panel = bar_panel
 
-	var vbox = VBoxContainer.new()
-	vbox.add_theme_constant_override("separation", 8)
-	margin.add_child(vbox)
+	var bar_row = HBoxContainer.new()
+	bar_row.add_theme_constant_override("separation", 14)
+	bar_panel.add_child(bar_row)
+
+	var col_turn = VBoxContainer.new()
+	col_turn.add_theme_constant_override("separation", 6)
+	col_turn.custom_minimum_size = Vector2(PANEL_INNER_WIDTH, 0)
+	bar_row.add_child(col_turn)
+	bar_row.add_child(VSeparator.new())
+
+	# Colonne des actions dans un conteneur à défilement vertical : la barre garde
+	# sa taille quel que soit le nombre de sorts/compétences.
+	var spells_scroll := ScrollContainer.new()
+	spells_scroll.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	spells_scroll.size_flags_vertical = Control.SIZE_EXPAND_FILL
+	spells_scroll.horizontal_scroll_mode = ScrollContainer.SCROLL_MODE_DISABLED
+	bar_row.add_child(spells_scroll)
+	var col_spells = VBoxContainer.new()
+	col_spells.add_theme_constant_override("separation", 6)
+	col_spells.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	spells_scroll.add_child(col_spells)
+	bar_row.add_child(VSeparator.new())
+
+	var col_actions = VBoxContainer.new()
+	col_actions.add_theme_constant_override("separation", 6)
+	bar_row.add_child(col_actions)
+
+	var vbox = col_turn
 
 	_turn_label = Label.new()
-	_turn_label.add_theme_font_size_override("font_size", 22)
+	_turn_label.add_theme_font_size_override("font_size", 16)
+	_turn_label.add_theme_color_override("font_color", UITheme.TITLE)
+	_turn_label.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	_turn_label.custom_minimum_size = Vector2(PANEL_INNER_WIDTH, 0)
 	vbox.add_child(_turn_label)
 
 	_order_label = Label.new()
 	_order_label.add_theme_font_size_override("font_size", 14)
-	_order_label.modulate = Color(0.75, 0.75, 0.75)
+	_order_label.modulate = Color(0.8, 0.76, 0.65)
+	_order_label.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	_order_label.custom_minimum_size = Vector2(PANEL_INNER_WIDTH, 0)
+	_order_label.text = "Ordre du tour :"
+	_order_label.visible = false  # Gain de place : les tokens parlent d'eux-mêmes.
 	vbox.add_child(_order_label)
 
+	# Ordre d'initiative en TOKENS : au survol, l'unité correspondante est
+	# mise en surbrillance sur la grille (voir _on_order_token_hover).
+	_order_row = HFlowContainer.new()
+	_order_row.add_theme_constant_override("h_separation", 4)
+	_order_row.add_theme_constant_override("v_separation", 4)
+	_order_row.custom_minimum_size = Vector2(PANEL_INNER_WIDTH, 0)
+	vbox.add_child(_order_row)
+
+	vbox = col_spells
 	var spells_title = Label.new()
-	spells_title.text = "Sorts / Attaques :"
+	spells_title.text = "Actions"
 	spells_title.add_theme_font_size_override("font_size", 14)
+	spells_title.add_theme_color_override("font_color", UITheme.TITLE)
 	vbox.add_child(spells_title)
 
 	# Filtres élémentaires (voir Spell.elements) : AUCUN sort à élément
@@ -148,8 +331,9 @@ func _build_ui() -> void:
 	# sont couverts (un sort Double Eau+Feu n'apparaît qu'avec les deux
 	# filtres Eau ET Feu activés). Les sorts sans élément (attaque
 	# d'arme, autres classes) restent toujours affichés, non filtrés.
-	_element_filter_row = HBoxContainer.new()
-	_element_filter_row.add_theme_constant_override("separation", 4)
+	_element_filter_row = HFlowContainer.new()
+	_element_filter_row.add_theme_constant_override("h_separation", 4)
+	_element_filter_row.add_theme_constant_override("v_separation", 4)
 	_element_filter_row.visible = false  # Masquée par défaut ; _rebuild_spell_buttons() la ré-affiche seulement pour une classe à sorts élémentaires.
 	vbox.add_child(_element_filter_row)
 
@@ -163,8 +347,10 @@ func _build_ui() -> void:
 		filter_button.toggled.connect(func(pressed): _on_element_filter_toggled(element, pressed))
 		_element_filter_row.add_child(filter_button)
 
-	_spell_buttons_container = HBoxContainer.new()
-	_spell_buttons_container.add_theme_constant_override("separation", 6)
+	# Sous-sections (Attaques, Sorts, Pièges, Compétences, Inventaire) remplies
+	# par _rebuild_spell_buttons : un titre + une rangée de boutons chacune.
+	_spell_buttons_container = VBoxContainer.new()
+	_spell_buttons_container.add_theme_constant_override("separation", 4)
 	vbox.add_child(_spell_buttons_container)
 
 	# Bouton de validation pour un sort de terrain en cours de sélection
@@ -265,9 +451,18 @@ func _build_ui() -> void:
 	_resurrect_panel.add_child(resurrect_cancel)
 	vbox.add_child(_resurrect_panel)
 
+	# Compétences (race + métiers) de l'unité qui joue, détail au survol.
+	_char_skills_box = HFlowContainer.new()
+	_char_skills_box.add_theme_constant_override("h_separation", 8)
+	_char_skills_box.add_theme_constant_override("v_separation", 2)
+	_char_skills_box.visible = false
+	vbox.add_child(_char_skills_box)
+
+	vbox = col_actions
 	var stance_title = Label.new()
 	stance_title.text = "Posture défensive :"
 	stance_title.add_theme_font_size_override("font_size", 14)
+	stance_title.add_theme_color_override("font_color", UITheme.TITLE)
 	vbox.add_child(stance_title)
 
 	var stance_row = HBoxContainer.new()
@@ -300,8 +495,9 @@ func _build_ui() -> void:
 
 	# Capacités à bascule : visibles seulement pour l'unité qui les possède
 	# (voir _sync_ability_buttons).
-	_ability_row = HBoxContainer.new()
-	_ability_row.add_theme_constant_override("separation", 6)
+	_ability_row = HFlowContainer.new()
+	_ability_row.add_theme_constant_override("h_separation", 6)
+	_ability_row.add_theme_constant_override("v_separation", 6)
 	_ability_row.visible = false
 	vbox.add_child(_ability_row)
 
@@ -346,15 +542,6 @@ func _build_ui() -> void:
 	bottom_row.add_theme_constant_override("separation", 8)
 	vbox.add_child(bottom_row)
 
-	_inventory_button = Button.new()
-	_inventory_button.text = "☰"
-	_inventory_button.tooltip_text = "Inventaire"
-	_inventory_button.custom_minimum_size = Vector2(44, 44)
-	_inventory_button.add_theme_font_size_override("font_size", 20)
-	_inventory_button.pressed.connect(_on_inventory_pressed)
-	_set_button_icon(_inventory_button, "inventaire")
-	bottom_row.add_child(_inventory_button)
-
 	_end_turn_button = Button.new()
 	_end_turn_button.text = "➡"
 	_end_turn_button.tooltip_text = "Fin de tour"
@@ -365,8 +552,6 @@ func _build_ui() -> void:
 	bottom_row.add_child(_end_turn_button)
 
 	_build_character_panel(canvas)
-	_build_inventory_popup(canvas)
-	_build_arrow_popup(canvas)
 
 # Construit l'encadré "fiche personnage" en haut à droite de l'écran :
 # affiche le nom, l'équipe et les PV de la dernière unité cliquée
@@ -374,11 +559,8 @@ func _build_ui() -> void:
 func _build_character_panel(canvas: CanvasLayer) -> void:
 	_char_panel = PanelContainer.new()
 
-	var style = StyleBoxFlat.new()
-	style.bg_color = Color(0.08, 0.08, 0.1, 0.85)
-	style.set_corner_radius_all(8)
-	style.set_content_margin_all(12)
-	_char_panel.add_theme_stylebox_override("panel", style)
+	_char_panel.theme = UITheme.build_theme()
+	_char_panel.add_theme_stylebox_override("panel", UITheme.panel_style(UITheme.GOLD_DIM, 8, 12, 0.88))
 
 	_char_panel.set_anchors_preset(Control.PRESET_TOP_RIGHT)
 	_char_panel.grow_horizontal = Control.GROW_DIRECTION_BEGIN
@@ -392,6 +574,7 @@ func _build_character_panel(canvas: CanvasLayer) -> void:
 
 	_char_name_label = Label.new()
 	_char_name_label.add_theme_font_size_override("font_size", 20)
+	_char_name_label.add_theme_color_override("font_color", UITheme.TITLE)
 	char_vbox.add_child(_char_name_label)
 
 	_char_team_label = Label.new()
@@ -401,6 +584,7 @@ func _build_character_panel(canvas: CanvasLayer) -> void:
 	_char_hp_bar = ProgressBar.new()
 	_char_hp_bar.custom_minimum_size = Vector2(0, 18)
 	_char_hp_bar.show_percentage = false
+	UITheme.style_hp_bar(_char_hp_bar)
 	char_vbox.add_child(_char_hp_bar)
 
 	_char_hp_label = Label.new()
@@ -420,150 +604,73 @@ func _build_character_panel(canvas: CanvasLayer) -> void:
 	char_vbox.add_child(_char_stats_label)
 
 	# Compétences (race + métiers) : une ligne par compétence, détail au survol.
-	_char_skills_box = VBoxContainer.new()
-	_char_skills_box.add_theme_constant_override("separation", 2)
-	char_vbox.add_child(_char_skills_box)
 
 	_render_character_panel()  # État initial : placeholder "aucune unité".
 
-# ---------- Popup Inventaire (potions + changement d'arme) ----------
+# ---------- Attaque à distance : munition sélectionnée ----------
 
-func _build_inventory_popup(canvas: CanvasLayer) -> void:
-	_inventory_popup = PopupPanel.new()
-	_inventory_popup.min_size = Vector2(260, 0)
-	canvas.add_child(_inventory_popup)
-
-	var margin = MarginContainer.new()
-	margin.add_theme_constant_override("margin_left", 12)
-	margin.add_theme_constant_override("margin_top", 12)
-	margin.add_theme_constant_override("margin_right", 12)
-	margin.add_theme_constant_override("margin_bottom", 12)
-	_inventory_popup.add_child(margin)
-
-	_inventory_list_container = VBoxContainer.new()
-	_inventory_list_container.add_theme_constant_override("separation", 6)
-	margin.add_child(_inventory_list_container)
-
-func _on_inventory_pressed() -> void:
-	if _turn_order.is_empty():
-		return
-
-	var unit = _turn_order[_current_index]
-
-	for child in _inventory_list_container.get_children():
-		child.queue_free()
-
-	var has_content = false
-
-	if not unit.inventory_potions.is_empty():
-		has_content = true
-		var potions_title = Label.new()
-		potions_title.text = "Potions :"
-		potions_title.add_theme_font_size_override("font_size", 14)
-		_inventory_list_container.add_child(potions_title)
-
-		for potion in unit.inventory_potions:
-			var btn = Button.new()
-			btn.text = potion.get_display_text()
-			btn.disabled = not unit.can_perform_action(unit.utility_action_slot)
-			btn.pressed.connect(func():
-				var gained = unit.use_potion(potion)
-				if gained >= 0:
-					_inventory_popup.hide()
-					var is_heal = potion.potion_type == Potion.PotionType.HEAL
-					var color = Color(0.35, 0.9, 0.5) if is_heal else Color(0.65, 0.45, 0.95)
-					var suffix = "PV" if is_heal else "EA"
-					_hex_grid.spawn_floating_text(unit.position, "+%d %s" % [gained, suffix], color)
-					refresh_ui()
-			)
-			_inventory_list_container.add_child(btn)
-
-	if not unit.inventory_weapons.is_empty():
-		has_content = true
-		var weapons_title = Label.new()
-		weapons_title.text = "Changer d'arme :"
-		weapons_title.add_theme_font_size_override("font_size", 14)
-		_inventory_list_container.add_child(weapons_title)
-
-		for weapon in unit.inventory_weapons:
-			var btn = Button.new()
-			btn.text = "%s (%d dégâts)" % [weapon.weapon_name, weapon.damage]
-			btn.disabled = not unit.can_perform_action(unit.utility_action_slot)
-			btn.pressed.connect(func():
-				if unit.equip_weapon(weapon):
-					_inventory_popup.hide()
-					refresh_ui()
-			)
-			_inventory_list_container.add_child(btn)
-
-	if not has_content:
-		var empty_label = Label.new()
-		empty_label.text = "Inventaire vide."
-		_inventory_list_container.add_child(empty_label)
-
-	_inventory_popup.popup_centered()
-
-# ---------- Popup choix de flèche (arme à distance) ----------
-
-func _build_arrow_popup(canvas: CanvasLayer) -> void:
-	_arrow_popup = PopupPanel.new()
-	_arrow_popup.min_size = Vector2(240, 0)
-	canvas.add_child(_arrow_popup)
-
-	var margin = MarginContainer.new()
-	margin.add_theme_constant_override("margin_left", 12)
-	margin.add_theme_constant_override("margin_top", 12)
-	margin.add_theme_constant_override("margin_right", 12)
-	margin.add_theme_constant_override("margin_bottom", 12)
-	_arrow_popup.add_child(margin)
-
-	_arrow_list_container = VBoxContainer.new()
-	_arrow_list_container.add_theme_constant_override("separation", 6)
-	margin.add_child(_arrow_list_container)
-
-# Ouvre le choix de munition pour une attaque d'arme à distance. Si
-# l'unité n'a aucune flèche en inventaire, on tire directement avec
-# les dégâts de base de l'arme (pas de popup superflu).
-func _open_arrow_popup(spell: Spell, unit) -> void:
-	if unit.inventory_arrows.is_empty():
-		_hex_grid.enter_targeting_mode(spell)
-		return
-
-	for child in _arrow_list_container.get_children():
-		child.queue_free()
-
-	var title = Label.new()
-	title.text = "Choisis ta flèche :"
-	title.add_theme_font_size_override("font_size", 14)
-	_arrow_list_container.add_child(title)
-
+# Munition utilisable pour `unit` : la sélectionnée si elle reste en carquois, sinon
+# la première qui en a encore (null si plus rien ou aucun carquois).
+func _current_arrow(unit):
+	if unit.selected_arrow != null and unit.inventory_arrows.has(unit.selected_arrow) and unit.selected_arrow.quantity > 0:
+		return unit.selected_arrow
 	for arrow in unit.inventory_arrows:
-		var btn = Button.new()
+		if arrow.quantity > 0:
+			unit.selected_arrow = arrow
+			return arrow
+	return null
+
+# Lance le ciblage d'une attaque d'arme à distance avec la munition sélectionnée
+# (plus de fenêtre de choix) ; la flèche est consommée au tir, voir HexGrid._cast_spell.
+func _start_ranged_attack(spell: Spell, unit) -> void:
+	var arrow = _current_arrow(unit)
+	if arrow == null:
+		_hex_grid.enter_targeting_mode(spell)  # Pas de carquois : dégâts de base de l'arme.
+		return
+	var augmented: Spell = spell.duplicate()
+	augmented.origin_spell = spell  # Le suivi "déjà utilisé" compte sur le sort d'origine.
+	augmented.source_weapon = spell.source_weapon
+	augmented.damage = spell.damage + arrow.damage_bonus  # Pour l'affichage (tooltip) uniquement.
+	augmented.flat_damage_bonus = arrow.damage_bonus  # Pour les dégâts RÉELS (voir HexGrid._resolve_weapon_attack).
+	augmented.spell_name = "%s [%s]" % [spell.spell_name, arrow.arrow_name]
+	augmented.arrow_used = arrow
+	_hex_grid.enter_targeting_mode(augmented)
+
+# Sélecteur de munition sous les attaques d'une arme à distance : même principe que
+# la posture défensive (un clic active, le choix reste jusqu'à changement).
+func _add_arrow_selector(unit, holder: VBoxContainer) -> void:
+	var weapon = unit.equipped_weapon
+	if weapon == null or weapon.weapon_type != Weapon.WeaponType.RANGED or unit.inventory_arrows.is_empty():
+		return
+	var title := Label.new()
+	title.text = "Munitions"
+	title.add_theme_font_size_override("font_size", 12)
+	title.modulate = Color(0.8, 0.76, 0.65)
+	holder.add_child(title)
+	var row := HFlowContainer.new()
+	row.add_theme_constant_override("h_separation", 6)
+	row.add_theme_constant_override("v_separation", 6)
+	holder.add_child(row)
+	var group := ButtonGroup.new()
+	var current = _current_arrow(unit)
+	for arrow in unit.inventory_arrows:
+		var btn := Button.new()
 		btn.text = arrow.get_display_text()
+		btn.toggle_mode = true
+		btn.button_group = group
+		btn.custom_minimum_size = Vector2(0, 34)
 		btn.disabled = arrow.quantity <= 0
-		btn.pressed.connect(func():
-			if arrow.quantity <= 0:
-				return  # Sécurité (le bouton devrait déjà être désactivé).
-
-			arrow.quantity -= 1
-
-			var augmented: Spell = spell.duplicate()
-			augmented.origin_spell = spell  # Le suivi "déjà utilisé" compte sur le sort d'origine.
-			augmented.source_weapon = spell.source_weapon  # Explicite, par sécurité (ne pas dépendre du comportement de duplicate() sur les champs non-@export).
-			augmented.damage = spell.damage + arrow.damage_bonus  # Pour l'affichage (tooltip) uniquement.
-			augmented.flat_damage_bonus = arrow.damage_bonus  # Pour les dégâts RÉELS (voir HexGrid._resolve_weapon_attack).
-			augmented.spell_name = "%s [%s]" % [spell.spell_name, arrow.arrow_name]
-			_arrow_popup.hide()
-			_hex_grid.enter_targeting_mode(augmented)
-		)
-		_arrow_list_container.add_child(btn)
-
-	_arrow_popup.popup_centered()
+		btn.button_pressed = arrow == current
+		btn.tooltip_text = "Munition utilisée par tes attaques à distance (reste active tant que tu n'en changes pas)."
+		btn.pressed.connect(func(): unit.selected_arrow = arrow)
+		row.add_child(btn)
 
 # Appelée par HexGrid une fois toutes les unités de départ placées.
 # Construit la file d'initiative et démarre le premier tour.
 func start_combat(units: Array) -> void:
 	_hex_grid = get_parent()
+	if not _hex_grid.combat_log.is_connected(_on_combat_log):
+		_hex_grid.combat_log.connect(_on_combat_log)
 	enemy_ai_enabled = TowerManager.run_active
 
 	# Larcin (Voleur) : calculé UNE SEULE FOIS ici (pas à la fin), voir
@@ -612,6 +719,7 @@ func _start_current_turn() -> void:
 		return
 
 	var unit = _turn_order[_current_index]
+	_hex_grid.log_event("— Tour de %s —" % unit.unit_name)
 
 	# Nuit (Noirceur, Prêtre — voir HexGrid.is_night/_install_night) :
 	# décomptée une fois par ROUND complet, pas à chaque tour individuel
@@ -627,6 +735,7 @@ func _start_current_turn() -> void:
 	# tick renvoyé.
 	var status_ticks = unit.process_status_effects_on_turn_start()
 	for tick in status_ticks:
+		_hex_grid.log_event("%s subit %d dégâts (%s)." % [unit.unit_name, tick["amount"], tick["label"]])
 		_hex_grid.spawn_floating_text(unit.position, "-%d (%s)" % [tick["amount"], tick["label"]], Color(0.85, 0.25, 0.15))
 
 	if not is_instance_valid(unit) or unit.current_hp <= 0:
@@ -634,6 +743,13 @@ func _start_current_turn() -> void:
 
 	# Plan parallèle (Prêtre) : décompte des tours d'isolement de cette unité.
 	_hex_grid.tick_parallel_plane(unit)
+
+	# Traits d'ennemi de la Tour déclenchés en début de tour (liane de zone,
+	# invocation d'un allié...) — voir HexGrid.process_turn_start_traits.
+	_hex_grid.process_trap_release(unit)
+	_hex_grid.process_turn_start_traits(unit)
+	if not is_instance_valid(unit) or unit.current_hp <= 0 or _hex_grid.combat_ended:
+		return
 
 	# Étourdie (Mistral, Marchand de sable) ou gelée (Cryogénisation) :
 	# son tour passe intégralement, sans qu'elle puisse rien faire.
@@ -692,7 +808,6 @@ func _start_current_turn() -> void:
 # faire passer le tour de l'adversaire en plein milieu de son action.
 func _set_player_controls_enabled(enabled: bool) -> void:
 	_end_turn_button.disabled = not enabled
-	_inventory_button.disabled = not enabled
 	_stance_parry_button.disabled = not enabled
 	_stance_dodge_button.disabled = not enabled
 	_coup_decisif_button.disabled = not enabled
@@ -752,9 +867,11 @@ func _on_end_turn_pressed() -> void:
 	_start_current_turn()
 
 func _update_ui() -> void:
+	_refresh_team_panel()
 	if _turn_order.is_empty():
 		_turn_label.text = "Combat terminé !"
-		_order_label.text = ""
+		_clear_order_row()
+		_render_skill_list(null)
 		_clear_spell_buttons()
 		return
 
@@ -766,13 +883,10 @@ func _update_ui() -> void:
 		unit.unit_name, team_label, unit.current_pm, resource_text
 	]
 
-	var upcoming: Array = []
-	for i in range(1, _turn_order.size()):
-		var idx = (_current_index + i) % _turn_order.size()
-		upcoming.append(_turn_order[idx].unit_name)
-	_order_label.text = "À suivre : " + " → ".join(upcoming)
+	_rebuild_order_row()
 
 	_rebuild_spell_buttons(unit)
+	_render_skill_list(unit)  # Après les sorts : une erreur ici ne doit jamais les masquer.
 	_render_character_panel()
 	_sync_stance_buttons(unit)
 	_sync_ability_buttons(unit)
@@ -809,25 +923,32 @@ func _sync_ability_buttons(unit) -> void:
 	_ability_row.visible = has_decisif or unit.is_meca_support
 
 # Liste des compétences de l'unité dans la fiche personnage.
+# Compétences UTILES EN COMBAT de l'unité qui joue (celles qui ont un effet en
+# combat, voir SkillDatabase.COMBAT_EFFECTS) ; détail au survol.
 func _render_skill_list(unit) -> void:
 	for child in _char_skills_box.get_children():
+		_char_skills_box.remove_child(child)
 		child.queue_free()
-	var codes: Array = unit.get_skill_codes()
-	if codes.is_empty():
+	var skills: Array = []
+	if unit != null:
+		for code in unit.get_skill_codes():
+			if not SkillDatabase.COMBAT_EFFECTS.has(code):
+				continue
+			var skill = SkillDatabase.build(code)
+			if skill != null:
+				skills.append(skill)
+	if skills.is_empty():
 		_char_skills_box.visible = false
 		return
 	_char_skills_box.visible = true
 	var title := Label.new()
 	title.text = "Compétences :"
 	title.add_theme_font_size_override("font_size", 13)
-	title.modulate = Color(0.95, 0.85, 0.5)
+	title.add_theme_color_override("font_color", UITheme.TITLE)
 	_char_skills_box.add_child(title)
-	for code in codes:
-		var skill = SkillDatabase.build(code)
-		if skill == null:
-			continue
+	for skill in skills:
 		var label := Label.new()
-		label.text = "• " + skill.skill_name
+		label.text = skill.skill_name
 		label.add_theme_font_size_override("font_size", 12)
 		label.modulate = Color(0.85, 0.85, 0.85)
 		label.mouse_filter = Control.MOUSE_FILTER_STOP
@@ -836,6 +957,83 @@ func _render_skill_list(unit) -> void:
 
 # Appelée depuis HexGrid après un cast de sort, pour rafraîchir
 # l'affichage de l'EA restante sans changer de tour.
+# En-tête du tour (nom, PM restants, ressource) : appelée aussi après chaque
+# déplacement, pour que les PM se décrémentent à l'écran pendant le tour.
+func refresh_turn_header() -> void:
+	if _turn_order.is_empty():
+		return
+	var unit = _turn_order[_current_index]
+	var team_label = "Joueur" if unit.team == CombatUnit.Team.PLAYER else "Ennemi"
+	var floor_prefix: String = ("Étage %d — " % TowerManager.current_floor) if TowerManager.run_active else ""
+	_turn_label.text = floor_prefix + "Tour de : %s (%s) — PM: %d | %s" % [
+		unit.unit_name, team_label, unit.current_pm, unit.get_resource_summary(true)
+	]
+
+func _clear_order_row() -> void:
+	_set_highlight(null)
+	if _order_row == null:
+		return
+	for child in _order_row.get_children():
+		_order_row.remove_child(child)
+		child.queue_free()
+
+# Une pastille-token par unité, dans l'ordre du tour (celle qui joue est cerclée d'or).
+func _rebuild_order_row() -> void:
+	_clear_order_row()
+	for i in range(_turn_order.size()):
+		var unit = _turn_order[(_current_index + i) % _turn_order.size()]
+		if not is_instance_valid(unit):
+			continue
+		_order_row.add_child(_make_order_token(unit, i == 0))
+
+func _make_order_token(unit, is_current: bool) -> Control:
+	var is_player: bool = unit.team == CombatUnit.Team.PLAYER
+	var ring: Color = UITheme.GOLD if is_current else (unit.player_color if is_player else unit.enemy_color)
+	var cell := PanelContainer.new()
+	cell.custom_minimum_size = Vector2(32, 32)
+	var style := StyleBoxFlat.new()
+	style.bg_color = Color(0.06, 0.07, 0.1)
+	style.border_color = ring
+	style.set_border_width_all(3 if is_current else 2)
+	style.set_corner_radius_all(16)
+	style.set_content_margin_all(2)
+	cell.add_theme_stylebox_override("panel", style)
+	cell.mouse_filter = Control.MOUSE_FILTER_STOP
+	cell.tooltip_text = "%s — PV %d / %d" % [unit.unit_name, unit.current_hp, unit.max_hp]
+
+	var token := TokenDatabase.texture_for(unit)
+	if token != null:
+		var img := TextureRect.new()
+		img.texture = token
+		img.expand_mode = TextureRect.EXPAND_IGNORE_SIZE
+		img.stretch_mode = TextureRect.STRETCH_KEEP_ASPECT_CENTERED
+		img.mouse_filter = Control.MOUSE_FILTER_IGNORE
+		cell.add_child(img)
+	else:
+		var initial := Label.new()
+		initial.text = unit.unit_name.substr(0, 1)
+		initial.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+		initial.vertical_alignment = VERTICAL_ALIGNMENT_CENTER
+		initial.mouse_filter = Control.MOUSE_FILTER_IGNORE
+		cell.add_child(initial)
+
+	cell.mouse_entered.connect(func(): _set_highlight(unit))
+	cell.mouse_exited.connect(func(): _set_highlight(null))
+	return cell
+
+# Surbrillance sur la grille — sauf pour une unité invisible aux yeux du
+# joueur (ennemi invisible, cadavre retiré de la grille...).
+func _set_highlight(unit) -> void:
+	if _highlighted_unit != null and is_instance_valid(_highlighted_unit):
+		_highlighted_unit.set_highlight(false)
+	_highlighted_unit = null
+	if unit == null or not is_instance_valid(unit) or not unit.is_inside_tree() or not unit.visible:
+		return
+	if unit.is_untargetable and unit.team != CombatUnit.Team.PLAYER:
+		return
+	unit.set_highlight(true)
+	_highlighted_unit = unit
+
 func refresh_ui() -> void:
 	_update_ui()
 
@@ -848,8 +1046,7 @@ func _rebuild_spell_buttons(unit) -> void:
 	_spell_buttons_unit = unit
 
 	# Les filtres n'ont d'intérêt que pour une classe qui a des sorts à
-	# élément (le Mage) — invisibles pour les autres, pas de boutons
-	# inutiles à regarder.
+	# élément (le Mage) — invisibles pour les autres.
 	var has_elemental_spells = false
 	for spell in unit.spells:
 		if not spell.elements.is_empty():
@@ -857,18 +1054,14 @@ func _rebuild_spell_buttons(unit) -> void:
 			break
 	_element_filter_row.visible = has_elemental_spells
 
+	# Rangées (une par sous-section), créées à la première utilisation.
+	var sections: Dictionary = {}
+	var order: Array = ["Attaques", "Sorts", "Pièges", "Compétences", "Inventaire (double-clic pour utiliser)"]
 	for spell in unit.spells:
-		# Filtre élémentaire : un sort SANS élément (attaque d'arme,
-		# sorts des autres classes) n'est jamais filtré. Un sort AVEC
-		# éléments n'apparaît que si TOUS ses éléments sont couverts par
-		# les filtres actifs (aucun filtre actif = aucun sort à élément
-		# affiché).
-		# Filtre élémentaire : un sort SANS élément (attaque d'arme,
-		# sorts des autres classes) n'est jamais filtré. Un sort AVEC
-		# éléments n'apparaît que si l'ensemble de ses éléments correspond
-		# EXACTEMENT aux filtres actifs — Feu seul montre les sorts Feu
-		# uniquement, Feu+Eau montre UNIQUEMENT la Vapeur (pas Feu ni Eau
-		# en plus). Aucun filtre actif = aucun sort à élément affiché.
+		# Filtre élémentaire : un sort SANS élément n'est jamais filtré. Un sort
+		# AVEC éléments n'apparaît que si l'ensemble de ses éléments correspond
+		# EXACTEMENT aux filtres actifs (aucun filtre actif = aucun sort à
+		# élément affiché).
 		if not spell.elements.is_empty():
 			var active_count = 0
 			var matches = true
@@ -880,19 +1073,22 @@ func _rebuild_spell_buttons(unit) -> void:
 			if active_count == 0 or active_count != spell.elements.size() or not matches:
 				continue
 
+		var section_name: String = _spell_section_for(spell)
+		var row: HFlowContainer = _get_spell_section_row(sections, section_name)
+
 		var button = Button.new()
 		var icon_texture: Texture2D = spell.get_icon_texture()
 		if icon_texture != null:
 			button.icon = icon_texture
 			button.expand_icon = true  # L'icône remplit le bouton.
-			button.custom_minimum_size = Vector2(56, 56)
+			button.custom_minimum_size = Vector2(46, 46)
 		else:
 			button.text = spell.get_icon_text()
-			button.custom_minimum_size = Vector2(48, 48)
+			button.custom_minimum_size = Vector2(42, 42)
 			button.add_theme_font_size_override("font_size", 22)
 		button.tooltip_text = spell.get_tooltip_text(unit)  # Coût + effet, affiché au survol par Godot.
 
-		var can_afford = unit.current_ea >= spell.get_effective_ea_cost(unit)
+		var can_afford = _hex_grid.can_afford_spell(unit, spell)
 		var can_act = unit.can_perform_action(spell)
 		button.disabled = not (can_afford and can_act)
 
@@ -902,11 +1098,126 @@ func _rebuild_spell_buttons(unit) -> void:
 			and spell.source_weapon.weapon_type == Weapon.WeaponType.RANGED
 
 		if is_ranged_weapon_attack:
-			button.pressed.connect(func(): _open_arrow_popup(spell, unit))
+			button.pressed.connect(func(): _start_ranged_attack(spell, unit))
 		else:
 			button.pressed.connect(func(): _hex_grid.enter_targeting_mode(spell))
 
-		_spell_buttons_container.add_child(button)
+		row.add_child(button)
+
+	if sections.has("Attaques"):
+		_add_arrow_selector(unit, sections["Attaques"]["holder"])
+	_add_inventory_section(unit, sections)
+
+	# Ordre fixe des sous-sections (titre + rangée), quel que soit l'ordre de création.
+	var idx := 0
+	for name in order:
+		if sections.has(name):
+			var holder: Control = sections[name]["holder"]
+			_spell_buttons_container.move_child(holder, idx)
+			idx += 1
+
+func _spell_section_for(spell: Spell) -> String:
+	if spell.is_weapon_attack:
+		return "Attaques"
+	if spell.is_trap_spell:
+		return "Pièges"
+	if spell.is_detect_skill or spell.is_disarm_skill or spell.is_hobbit_bravoure or spell.is_hobbit_precision \
+			or spell.is_ogre_pi or spell.is_samurai_concentration:
+		return "Compétences"
+	return "Sorts"
+
+# Rangée de boutons d'une sous-section (crée le titre et la rangée au besoin).
+func _get_spell_section_row(sections: Dictionary, section_name: String) -> HFlowContainer:
+	if sections.has(section_name):
+		return sections[section_name]["row"]
+	var holder := VBoxContainer.new()
+	holder.add_theme_constant_override("separation", 2)
+	# Titre EN LIGNE devant les boutons (une ligne de moins par section).
+	var title := Label.new()
+	title.text = section_name.split(" (")[0] + " :"
+	title.add_theme_font_size_override("font_size", 12)
+	title.add_theme_color_override("font_color", UITheme.TITLE)
+	title.custom_minimum_size = Vector2(0, 42)
+	title.vertical_alignment = VERTICAL_ALIGNMENT_CENTER
+	var row := HFlowContainer.new()
+	row.add_theme_constant_override("h_separation", 6)
+	row.add_theme_constant_override("v_separation", 4)
+	row.add_child(title)
+	holder.add_child(row)
+	_spell_buttons_container.add_child(holder)
+	sections[section_name] = {"holder": holder, "row": row}
+	return row
+
+# Section Inventaire : potions et armes de rechange, utilisées au DOUBLE-CLIC
+# (consomme l'action utilitaire du tour).
+func _add_inventory_section(unit, sections: Dictionary) -> void:
+	if unit.inventory_potions.is_empty() and unit.inventory_weapons.is_empty():
+		return
+	var row: HFlowContainer = _get_spell_section_row(sections, "Inventaire (double-clic pour utiliser)")
+	var can_use: bool = unit.can_perform_action(unit.utility_action_slot) and unit.team == CombatUnit.Team.PLAYER and not _is_ai_turn_running()
+
+	for potion in unit.inventory_potions:
+		var btn := Button.new()
+		btn.text = "%s %s" % [potion.get_icon_text(), potion.get_display_text()]
+		btn.custom_minimum_size = Vector2(0, 36)
+		btn.disabled = not can_use
+		btn.tooltip_text = "Double-clic pour boire (action utilitaire du tour)."
+		btn.gui_input.connect(func(event):
+			if _is_double_click(event):
+				_use_inventory_potion(unit, potion)
+		)
+		row.add_child(btn)
+
+	for weapon in unit.inventory_weapons:
+		_add_weapon_button(row, unit, weapon, false, can_use)
+		# Personnage à deux armes : un second bouton pour la seconde main.
+		if unit.can_equip_off_hand(weapon):
+			_add_weapon_button(row, unit, weapon, true, can_use)
+
+func _add_weapon_button(row: HFlowContainer, unit, weapon, off_hand: bool, can_use: bool) -> void:
+	var can_dual: bool = unit.has_ambidextrie and not weapon.two_handed or unit.can_equip_off_hand(weapon)
+	var wbtn := Button.new()
+	var hand_text: String = ""
+	if can_dual:
+		hand_text = " · 2e main" if off_hand else " · main"
+	wbtn.text = "⚔ %s (%d dégâts)%s" % [weapon.weapon_name, weapon.damage, hand_text]
+	wbtn.custom_minimum_size = Vector2(0, 36)
+	var block: String = unit.off_hand_block_reason(weapon) if off_hand else unit.main_hand_block_reason(weapon)
+	wbtn.disabled = not can_use or block != ""
+	wbtn.tooltip_text = weapon.get_display_text() + "\nDouble-clic pour équiper en %s (action utilitaire du tour)." % ("seconde main" if off_hand else "main principale")
+	if weapon.two_handed:
+		wbtn.text += " 🤲"
+		wbtn.tooltip_text += "\nArme à 2 mains : occupe les deux mains (la seconde arme est rangée dans l'inventaire)."
+	if block != "":
+		wbtn.tooltip_text += "\n⛔ " + block
+	wbtn.gui_input.connect(func(event):
+		if _is_double_click(event):
+			_equip_inventory_weapon(unit, weapon, off_hand)
+	)
+	row.add_child(wbtn)
+
+func _is_double_click(event: InputEvent) -> bool:
+	return event is InputEventMouseButton and event.pressed and event.double_click and event.button_index == MOUSE_BUTTON_LEFT
+
+func _is_ai_turn_running() -> bool:
+	return _hex_grid != null and _hex_grid.ai_turn_in_progress
+
+func _use_inventory_potion(unit, potion) -> void:
+	if _is_ai_turn_running() or unit.team != CombatUnit.Team.PLAYER:
+		return
+	var gained = unit.use_potion(potion)
+	if gained >= 0:
+		var is_heal = potion.potion_type == Potion.PotionType.HEAL
+		var color = Color(0.35, 0.9, 0.5) if is_heal else Color(0.65, 0.45, 0.95)
+		_hex_grid.spawn_floating_text(unit.position, "+%d %s" % [gained, "PV" if is_heal else "EA"], color)
+		refresh_ui()
+
+func _equip_inventory_weapon(unit, weapon, off_hand: bool = false) -> void:
+	if _is_ai_turn_running() or unit.team != CombatUnit.Team.PLAYER:
+		return
+	var ok: bool = unit.equip_off_hand_weapon(weapon) if off_hand else unit.equip_weapon(weapon)
+	if ok:
+		refresh_ui()
 
 # Remplace le symbole texte d'un bouton par l'icône d'interface `icon_name`
 # (res://assets/spell_icons/ui/). Sans fichier, le symbole texte reste.
@@ -1048,8 +1359,6 @@ func _render_character_panel() -> void:
 	# Ressource propre à la classe : Rage (Berzerk), Gloire (Gladiateur),
 	# PA (Prêtre), EA sinon.
 	_char_ea_label.text = unit.get_resource_summary()
-	_render_skill_list(unit)
-
 	_char_stats_label.text = (
 		"Courage : %d\n" +
 		"Attaque : %d\n" +
@@ -1143,7 +1452,6 @@ func remove_unit_after_combat_end(unit) -> void:
 func show_combat_end(result: String) -> void:
 	_clear_spell_buttons()
 	_end_turn_button.disabled = true
-	_inventory_button.disabled = true
 	_stance_parry_button.disabled = true
 	_stance_dodge_button.disabled = true
 
@@ -1163,7 +1471,7 @@ func show_combat_end(result: String) -> void:
 
 	_turn_label.text = message
 	_turn_label.modulate = color
-	_order_label.text = ""
+	_clear_order_row()
 
 	_show_center_banner(message, color, result)
 
@@ -1186,10 +1494,15 @@ func _show_center_banner(message: String, color: Color, result: String) -> void:
 	center.mouse_filter = Control.MOUSE_FILTER_IGNORE
 	full_rect.add_child(center)
 
+	full_rect.theme = UITheme.build_theme()
+	var banner_panel = PanelContainer.new()
+	banner_panel.add_theme_stylebox_override("panel", UITheme.panel_style(UITheme.GOLD, 10, 28, 0.9))
+	center.add_child(banner_panel)
+
 	var vbox = VBoxContainer.new()
 	vbox.add_theme_constant_override("separation", 24)
 	vbox.alignment = BoxContainer.ALIGNMENT_CENTER
-	center.add_child(vbox)
+	banner_panel.add_child(vbox)
 
 	var banner_text: String = message
 	if TowerManager.run_active:
@@ -1200,7 +1513,7 @@ func _show_center_banner(message: String, color: Color, result: String) -> void:
 
 	var banner = Label.new()
 	banner.text = banner_text
-	banner.add_theme_font_size_override("font_size", 48)
+	banner.add_theme_font_size_override("font_size", 40)
 	banner.modulate = color
 	banner.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
 	vbox.add_child(banner)
@@ -1209,12 +1522,14 @@ func _show_center_banner(message: String, color: Color, result: String) -> void:
 		var continue_button = Button.new()
 		continue_button.text = "Continuer"
 		continue_button.custom_minimum_size = Vector2(160, 44)
+		UITheme.style_primary_button(continue_button)
 		continue_button.pressed.connect(func(): _return_to_exploration(result))
 		vbox.add_child(continue_button)
 	elif TowerManager.run_active:
 		var tower_button = Button.new()
 		tower_button.text = "Étage suivant" if result == "victory" else "Terminer l'ascension"
 		tower_button.custom_minimum_size = Vector2(220, 44)
+		UITheme.style_primary_button(tower_button)
 		tower_button.pressed.connect(func():
 			tower_button.disabled = true  # Un double clic enchaînerait deux changements de scène.
 			_finish_tower_floor(result)

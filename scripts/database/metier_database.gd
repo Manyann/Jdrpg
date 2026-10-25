@@ -393,7 +393,7 @@ static func _build_af() -> Metier:
 	metier.short_code = "AF"
 	metier.special_traits = ["Dégâts de feu réduits de moitié", "+1PI armes à feu"]
 	metier.equipment_restrictions = ["4PR Max"]
-	metier.inherited_skill_codes = ["DES", "TC"]
+	metier.inherited_skill_codes = ["DE", "TC"]
 	metier.special_skill_texts = ["Fabrication : Peut fabriquer plusieurs types de dispositif explosif, fumigène, fragmentation, incendiaire, mortier, mine, feu d'artifice"]
 	metier.parent_codes = ["IN"]
 	metier.prereqs = [{"stat": "intelligence", "type": "min", "value": 12}, {"stat": "adresse", "type": "min", "value": 12}, {"stat": "chance", "type": "min", "value": 10}]

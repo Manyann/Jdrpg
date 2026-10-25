@@ -248,6 +248,7 @@ func _build_mistral() -> Spell:
 	s.max_range = 6  # Portée non précisée par le catalogue d'origine — 1 à 6 par défaut.
 	s.cast_delay = 1
 	s.stun_turns = 2
+	s.damage = 0  # Aucun dégât : simple contrôle.
 	return s
 
 func _build_z_phir() -> Spell:
@@ -504,6 +505,7 @@ func _build_geyser() -> Spell:
 func _build_bombe_volcanique() -> Spell:
 	var s := Spell.new()
 	s.spell_name = "Bombe volcanique"
+	s.damage = 10  # Dégâts fixes (pas de dés).
 	s.elements = ["Terre", "Feu"]
 	s.ea_cost = 3
 	s.spell_type = Spell.SpellType.PHYSICAL
@@ -1104,7 +1106,8 @@ func _build_marchant_de_sable() -> Spell:
 	s.min_range = 1
 	s.max_range = 6  # Portée non précisée par le catalogue d'origine — 1 à 6 par défaut.
 	s.cast_delay = 1
-	s.stun_turns = 4
+	s.stun_turns = 3  # La cible passe 3 tours.
+	s.damage = 0  # Aucun dégât : simple contrôle.
 	return s
 
 func _build_homme_de_sable() -> Spell:

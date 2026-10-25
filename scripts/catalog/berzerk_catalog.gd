@@ -24,7 +24,7 @@ static func _build_frappe_puissante() -> Spell:
 	s.target_mode = Spell.TargetMode.SELF
 	s.is_berzerk_frappe_puissante = true
 	s.rage_cost = 5
-	s.spell_type = Spell.SpellType.PHYSICAL
+	s.spell_type = Spell.SpellType.NONE
 	return s
 
 static func _build_tourbillon() -> Spell:
@@ -33,7 +33,7 @@ static func _build_tourbillon() -> Spell:
 	s.target_mode = Spell.TargetMode.SELF
 	s.is_berzerk_tourbillon = true
 	s.rage_cost = 10
-	s.spell_type = Spell.SpellType.PHYSICAL
+	s.spell_type = Spell.SpellType.NONE
 	return s
 
 static func _build_raaah() -> Spell:
@@ -44,7 +44,7 @@ static func _build_raaah() -> Spell:
 	s.is_berzerk_raaah = true
 	s.ev_cost_min = 1
 	s.ev_cost_max = 999  # Pas de plafond précisé — borné par la Rage réellement disponible de toute façon.
-	s.spell_type = Spell.SpellType.PHYSICAL
+	s.spell_type = Spell.SpellType.NONE
 	return s
 
 static func _build_grr() -> Spell:

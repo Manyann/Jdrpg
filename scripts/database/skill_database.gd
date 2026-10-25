@@ -174,6 +174,14 @@ static func _build_det() -> Skill:
 	skill.skill_type = "actif"
 	return skill
 
+static func _build_piege() -> Skill:
+	var skill := Skill.new()
+	skill.code = "PIEGE"
+	skill.skill_name = "Poser des pièges"
+	skill.description = "Pose des pièges invisibles pour l'ennemi (charges limitées par combat) : un bouton par type de piège."
+	skill.skill_type = "actif"
+	return skill
+
 static func _build_er() -> Skill:
 	var skill := Skill.new()
 	skill.code = "ER"
@@ -382,7 +390,7 @@ static func _build_tdm() -> Skill:
 	skill.skill_type = "passif"
 	return skill
 
-const CODES: Array = ["AM", "AG", "ADR", "ADT", "ADV", "ADB", "AEC", "ALM", "BP", "BDD", "CDG", "CDN", "CH", "CHO", "CLA", "CU", "DS", "DE", "DET", "ER", "ES", "FA", "FDP", "IDS", "IDT", "IN", "JED", "LDM", "ME", "MEP", "NA", "NT", "PE", "PI", "PS", "RA", "RE", "RAR", "RB", "SDP", "SE", "TV", "TC", "TDP", "TDM"]
+const CODES: Array = ["AM", "AG", "ADR", "ADT", "ADV", "ADB", "AEC", "ALM", "BP", "BDD", "CDG", "CDN", "CH", "CHO", "CLA", "CU", "DS", "DE", "DET", "ER", "ES", "FA", "FDP", "IDS", "IDT", "IN", "JED", "LDM", "ME", "MEP", "NA", "NT", "PE", "PI", "PIEGE", "PS", "RA", "RE", "RAR", "RB", "SDP", "SE", "TV", "TC", "TDP", "TDM"]
 
 # Effet réel de la compétence en combat (« Aucun effet en combat » si elle ne
 # sert qu'en exploration).
@@ -394,7 +402,10 @@ const COMBAT_EFFECTS: Dictionary = {
 	"BP": "+1 dégât à mains nues.",
 	"CDN": "joue en premier (à égalité, ordre par Courage).",
 	"DS": "+1 PM de base.",
-	"DET": "bouton « Détecter » : 3 charges, test d'Intelligence + 2 ; révèle les unités invisibles à 2 cases ou moins (pièges à venir).",
+	"DET": "bouton « Détecter » : 3 charges, test d'Intelligence + 2 ; révèle unités invisibles et pièges dans une zone de 3 cases de large, à portée 2.",
+	"DE": "bouton « Désamorcer » : test d'Adresse ; retire un piège détecté ou libère la victime d'un piège déclenché (case adjacente).",
+	"PIEGE": "boutons de pièges : pose un piège invisible pour l'ennemi sur une case libre à portée 1-3 (charges limitées par type).",
+	"TDP": "+1D de dégâts quand un piège est déclenché sur soi.",
 	"PS": "à la fin d'un combat gagné, rend 1D+1 PV à chaque personne du groupe.",
 	"RE": "à la fin d'un combat gagné, rend 1D+1 EA à chaque personne du groupe.",
 	"TC": "permet d'utiliser les armes à distance.",
@@ -493,6 +504,8 @@ static func build(code: String) -> Skill:
 			return _build_tv()
 		"TC":
 			return _build_tc()
+		"PIEGE":
+			return _build_piege()
 		"TDP":
 			return _build_tdp()
 		"TDM":

@@ -178,8 +178,8 @@ static func _build_subito() -> Spell:
 	return s
 
 static func build_all() -> Array:
-	return [
+	return ClassSpellIcons.apply([
 		_build_fortissimo(), _build_legato(), _build_maestoso(), _build_molto(),
 		_build_adagio(), _build_tranquillo(), _build_meno(),
 		_build_rubato(), _build_vivace(), _build_slancio(), _build_subito(),
-	]
+	])

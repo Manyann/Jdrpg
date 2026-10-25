@@ -20,6 +20,15 @@ class_name EnemyAI
 #  3. Si aucune attaque n'est possible ce tour-ci, elle se rapproche de
 #     l'ennemi le plus proche (par le chemin réel, obstacles compris).
 #
+# Règles de bon sens (voir _choose_plan) :
+#  - Une unité dont l'attaque PRINCIPALE est à distance (arc, sorts...) ne
+#    s'engage jamais au corps à corps de son plein gré : elle n'entre pas dans
+#    une case adjacente à un adversaire, préfère les cases éloignées, et ne
+#    frappe au contact qu'en dernier recours (déjà au contact, rien d'autre).
+#  - Un sort de vol de vie n'est pas joué quand l'unité a tous ses PV (sauf
+#    s'il ne lui reste aucune autre attaque) ; sinon sa valeur compte aussi les
+#    PV qu'il lui rendrait.
+#
 # Elle n'utilise que des attaques simples : l'attaque de son arme et les
 # sorts de dégâts à cible unique. Soins, invocations, sorts à sélecteur,
 # sorts de terrain... ne sont pas joués (voir _is_simple_attack).
@@ -93,6 +102,16 @@ static func _choose_plan(grid, unit, allow_pure_move: bool) -> Dictionary:
 
 	var spells: Array = _usable_attack_spells(unit)
 
+	# Vol de vie inutile à pleine santé : on le retire s'il reste une autre attaque.
+	if unit.current_hp >= unit.max_hp:
+		var without_drain: Array = spells.filter(func(sp): return not _is_lifesteal(sp))
+		if not without_drain.is_empty():
+			spells = without_drain
+
+	# Unité à distance : elle ne va pas au corps à corps de son plein gré.
+	var ranged_primary: bool = _is_ranged_primary(unit)
+	var foes: Array = _get_foes(grid, unit)
+
 	# Cases atteignables ce tour-ci (coût = nombre de PM), position actuelle comprise.
 	var reachable: Dictionary = grid.get_reachable_cells(unit.hex_coord, unit.current_pm)
 	var cells: Dictionary = {unit.hex_coord: 0}
@@ -102,6 +121,10 @@ static func _choose_plan(grid, unit, allow_pure_move: bool) -> Dictionary:
 	var best: Dictionary = {}
 	var best_score: float = -INF
 	for cell in cells:
+		var foe_distance: int = _nearest_foe_distance(grid, cell, foes)
+		# Une unité à distance n'avance pas au contact d'un adversaire.
+		if ranged_primary and cell != unit.hex_coord and foe_distance <= 1:
+			continue
 		for target in targets:
 			var distance: int = grid.hex_distance(cell, target.hex_coord)
 			for spell in spells:
@@ -110,6 +133,9 @@ static func _choose_plan(grid, unit, allow_pure_move: bool) -> Dictionary:
 				if not grid.has_line_of_sight(cell, target.hex_coord):
 					continue
 				var score: float = _score_attack(spell, target, distance, int(cells[cell]))
+				score += _lifesteal_bonus(unit, spell)
+				if ranged_primary:
+					score += _ranged_position_score(spell, foe_distance)
 				if score > best_score:
 					best_score = score
 					best = {"destination": cell, "cost": int(cells[cell]), "spell": spell, "target": target}
@@ -118,7 +144,7 @@ static func _choose_plan(grid, unit, allow_pure_move: bool) -> Dictionary:
 		return best
 	if not allow_pure_move:
 		return {}
-	return _approach_plan(grid, unit, targets, cells)
+	return _approach_plan(grid, unit, targets, cells, foes if ranged_primary else [])
 
 # Valeur d'une attaque : un coup qui tue passe avant tout, puis les dégâts ;
 # on retranche un peu pour chaque PM dépensé et pour les PV de la cible
@@ -130,6 +156,62 @@ static func _score_attack(spell, target, distance: int, move_cost: int) -> float
 		score += 1000.0
 	if spell.max_range > 1:
 		score += 0.3 * float(distance)
+	return score
+
+# ---------- Style de combat ----------
+
+# Vrai si l'attaque PRINCIPALE de l'unité est à distance : sa meilleure attaque
+# à distance (arme ou sort, EA ignorée) fait au moins 80 % de sa meilleure
+# attaque de mêlée. Un archer, un mage à dague : oui. Un guerrier : non.
+static func _is_ranged_primary(unit) -> bool:
+	var best_melee: float = 0.0
+	var best_ranged: float = 0.0
+	for spell in unit.spells:
+		if not _is_simple_attack(spell):
+			continue
+		var damage: float = _estimate_damage(spell)
+		if spell.max_range > 1:
+			best_ranged = maxf(best_ranged, damage)
+		else:
+			best_melee = maxf(best_melee, damage)
+	return best_ranged > 0.0 and best_ranged >= 0.8 * best_melee
+
+# Sort dont l'effet est de voler de la vie (Drain de vie...).
+static func _is_lifesteal(spell) -> bool:
+	return bool(spell.get("transfers_damage_to_ally"))
+
+# Valeur ajoutée d'un vol de vie : la moitié des PV réellement récupérables.
+static func _lifesteal_bonus(unit, spell) -> float:
+	if not _is_lifesteal(spell):
+		return 0.0
+	var missing: int = maxi(0, unit.max_hp - unit.current_hp)
+	return 0.5 * minf(_estimate_damage(spell), float(missing))
+
+# Adversaires vivants de l'unité (sans filtre de visibilité : pour garder ses
+# distances, peu importe qu'ils soient ciblables).
+static func _get_foes(grid, unit) -> Array:
+	var foes: Array = []
+	for other in grid.get_all_units():
+		if other.team != unit.team and other.current_hp > 0:
+			foes.append(other)
+	return foes
+
+# Distance (en cases) de `cell` à l'adversaire le plus proche (99 s'il n'y en a pas).
+static func _nearest_foe_distance(grid, cell: Vector2i, foes: Array) -> int:
+	var nearest: int = 99
+	for foe in foes:
+		nearest = mini(nearest, grid.hex_distance(cell, foe.hex_coord))
+	return nearest
+
+# Bonus/malus de position d'une unité à distance : attaquer loin des adversaires
+# est mieux ; au contact, c'est très mal vu, et une attaque de mêlée n'est qu'un
+# dernier recours.
+static func _ranged_position_score(spell, foe_distance: int) -> float:
+	var score: float = 0.6 * float(mini(foe_distance, 4))
+	if foe_distance <= 1:
+		score -= 8.0
+	if spell.max_range <= 1:
+		score -= 40.0
 	return score
 
 # Ennemis de cette unité qu'elle peut viser (vivants, pas invisibles).
@@ -155,7 +237,7 @@ static func _get_targets(grid, unit) -> Array:
 # possible : on choisit, parmi les cases atteignables, celle dont le CHEMIN
 # jusqu'à lui est le plus court (obstacles pris en compte, contrairement à
 # la distance à vol d'oiseau, qui bloquerait derrière un mur).
-static func _approach_plan(grid, unit, targets: Array, cells: Dictionary) -> Dictionary:
+static func _approach_plan(grid, unit, targets: Array, cells: Dictionary, avoid_contact_foes: Array = []) -> Dictionary:
 	var nearest = targets[0]
 	for target in targets:
 		if grid.hex_distance(unit.hex_coord, target.hex_coord) < grid.hex_distance(unit.hex_coord, nearest.hex_coord):
@@ -166,6 +248,9 @@ static func _approach_plan(grid, unit, targets: Array, cells: Dictionary) -> Dic
 	var best_distance: int = int(field.get(unit.hex_coord, 9999))
 	var best_cost: int = 0
 	for cell in cells:
+		# Unité à distance : on ne se rapproche jamais jusqu'au contact.
+		if not avoid_contact_foes.is_empty() and cell != unit.hex_coord and _nearest_foe_distance(grid, cell, avoid_contact_foes) <= 1:
+			continue
 		var d: int = int(field.get(cell, 9999))
 		var cost: int = int(cells[cell])
 		# Strictement plus près que sur place ; à chemin égal, le moins cher en PM.
@@ -207,6 +292,8 @@ static func _usable_attack_spells(unit) -> Array:
 	for spell in unit.spells:
 		if not _is_simple_attack(spell):
 			continue
+		if unit.is_weakened and not spell.is_weapon_attack:
+			continue  # Affaibli : aucun sort.
 		if not unit.can_perform_action(spell):
 			continue
 		if unit.current_ea < spell.get_effective_ea_cost(unit):

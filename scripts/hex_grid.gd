@@ -191,11 +191,16 @@ const DIRECTIONS = [
 	Vector2i(-1, 0), Vector2i(-1, 1), Vector2i(0, 1)
 ]
 
+## Décalage vers le haut (px) de la grille centrée, pour laisser la place à la
+## barre d'actions de TurnManager en bas de l'écran.
+const BOTTOM_BAR_SHIFT := 90.0
+
 # ---------- Cycle de vie Godot ----------
 
 func _ready() -> void:
 	if auto_center:
-		position = get_viewport_rect().size / 2.0
+		# La barre d'actions occupe le bas de l'écran : la grille est remontée.
+		position = get_viewport_rect().size / 2.0 - Vector2(0, BOTTOM_BAR_SHIFT)
 
 	# Si ce combat vient d'une rencontre d'exploration, on remplace la
 	# composition de test par la vraie (le seul personnage du joueur vs
@@ -221,6 +226,8 @@ func _ready() -> void:
 		water_blocks_line_of_sight = false
 
 	generate_grid()
+	if TowerManager.run_active and not WorldManager.combat_from_encounter:
+		_place_enemy_traps(TowerFloors.get_floor_traps(TowerManager.current_floor))
 	queue_redraw()
 
 	if turn_manager_path != NodePath(""):
@@ -232,7 +239,7 @@ func _ready() -> void:
 	else:
 		# Pas de phase de placement configurée : comportement historique,
 		# placement automatique instantané sur les zones par défaut.
-		print("HexGrid: 'Placement Manager Path' non renseigné — placement automatique (pas de choix de configuration).")
+		_log("HexGrid: 'Placement Manager Path' non renseigné — placement automatique (pas de choix de configuration).")
 		setup_starting_units()
 		if _turn_manager != null:
 			_turn_manager.start_combat(_all_units)
@@ -364,6 +371,8 @@ func _unhandled_input(event: InputEvent) -> void:
 			if move_unit(_selected_unit, coord):
 				_selected_unit.current_pm -= move_cost
 				spawn_floating_text(_selected_unit.position, "-%d PM" % move_cost, Color(0.4, 0.75, 1.0))
+				if _turn_manager != null:
+					_turn_manager.refresh_turn_header()  # PM restants à jour dans la barre du bas.
 				if _selected_unit.current_pm <= 0:
 					_deselect_unit()
 				else:
@@ -415,7 +424,7 @@ func generate_grid() -> void:
 			_cells[coord]["is_walkable"] = false
 			_cells[coord]["obstacle_type"] = ObstacleType.VIDE
 
-	print("Grille générée : %d cases (%d obstacles)." % [_cells.size(), obstacle_coords.size()])
+	_log("Grille générée : %d cases (%d obstacles)." % [_cells.size(), obstacle_coords.size()])
 
 # ---------- Conversions coordonnées <-> pixels ----------
 
@@ -676,21 +685,24 @@ func get_cells_in_range(center: Vector2i, min_r: int, max_r: int) -> Dictionary:
 func enter_targeting_mode(spell: Spell) -> void:
 	if active_unit == null:
 		return
+	if active_unit.is_weakened and not spell.is_weapon_attack:
+		spawn_floating_text(active_unit.position, "Affaibli : sorts impossibles", Color(0.7, 0.7, 0.7))
+		return
 
 	# Coût en Gloire (Gladiateur) : remplace entièrement la vérification
 	# d'EA — ce sort ne consomme aucune EA.
 	if spell.gloire_cost > 0:
 		if active_unit.gloire < spell.gloire_cost:
-			print("%s n'a pas assez de Gloire pour lancer %s (%d requise)." % [active_unit.unit_name, spell.spell_name, spell.gloire_cost])
+			_log("%s n'a pas assez de Gloire pour lancer %s (%d requise)." % [active_unit.unit_name, spell.spell_name, spell.gloire_cost])
 			return
 	else:
 		var ea_cost = _compute_initial_cost(active_unit, spell) if spell.is_initial_cost else spell.get_effective_ea_cost(active_unit)
 		if active_unit.current_ea < ea_cost:
-			print("Pas assez d'Énergie Astrale pour lancer %s." % spell.spell_name)
+			_log("Pas assez d'Énergie Astrale pour lancer %s." % spell.spell_name)
 			return
 
 	if not active_unit.can_perform_action(spell):
-		print("Une seule action par tour (ou 2 attaques mêlée avec Ambidextrie).")
+		_log("Une seule action par tour (ou 2 attaques mêlée avec Ambidextrie).")
 		return
 
 	# Sort à coût en PV (branche Walkyrie) OU en PA/EA variable (branche
@@ -710,8 +722,8 @@ func enter_targeting_mode(spell: Spell) -> void:
 		resource -= spell.ev_extra_flat_cost
 		var max_x = min(spell.ev_cost_max, resource)
 		if max_x < spell.ev_cost_min:
-			var resource_label = "PV" if spell.is_ev_cost_spell else ("PA" if spell.is_pa_cost_spell else "Rage")
-			print("%s n'a pas assez de %s pour lancer %s." % [active_unit.unit_name, resource_label, spell.spell_name])
+			var resource_label = "PV" if spell.is_ev_cost_spell else ("EA" if spell.is_pa_cost_spell else "Rage")
+			_log("%s n'a pas assez de %s pour lancer %s." % [active_unit.unit_name, resource_label, spell.spell_name])
 			return
 		if _turn_manager != null:
 			_turn_manager.show_ev_cost_picker(spell, spell.ev_cost_min, max_x)
@@ -762,7 +774,7 @@ func enter_targeting_mode(spell: Spell) -> void:
 		return
 
 	_casting_spell = spell
-	_spell_range_cells = get_cells_in_range(active_unit.hex_coord, spell.min_range, spell.max_range)
+	_spell_range_cells = _spell_range_with_self(active_unit, spell)
 	_reset_zone_orientation()
 	queue_redraw()
 
@@ -802,7 +814,7 @@ func confirm_ev_cost_spell(spell: Spell, x: int) -> void:
 			return
 
 	_casting_spell = spell
-	_spell_range_cells = get_cells_in_range(active_unit.hex_coord, spell.min_range, spell.max_range)
+	_spell_range_cells = _spell_range_with_self(active_unit, spell)
 	_reset_zone_orientation()
 	queue_redraw()
 
@@ -814,6 +826,32 @@ func confirm_ev_cost_spell(spell: Spell, x: int) -> void:
 # _resolve_spell_effect) ; si réussi, +4 à `stat_up` et -4 à
 # `stat_down` (deux champs bonus_* de StatusEffect, ex: "bonus_force")
 # pendant 5 tours.
+# Vrai si `unit` peut payer `spell` dans SA ressource : Gloire (Gladiateur), Rage
+# (Berzerk), PV, PA variable, coût initial, sinon EA. Sert à griser les boutons
+# de sorts (TurnManager) ; enter_targeting_mode revérifie de son côté.
+func can_afford_spell(unit: CombatUnit, spell: Spell) -> bool:
+	if unit.is_weakened and not spell.is_weapon_attack:
+		return false  # Affaibli : aucun sort (piège « Gaz »).
+	if spell.is_trap_spell:
+		return int(unit.trap_charges.get(spell.trap_id, 0)) > 0
+	if spell.is_detect_skill:
+		return unit.detect_uses > 0
+	if spell.gloire_cost > 0:
+		return unit.gloire >= spell.gloire_cost
+	if spell.rage_cost > 0:
+		return unit.rage >= spell.rage_cost
+	if spell.is_rage_cost_spell:
+		if (spell.is_berzerk_raaah and unit.raaah_used_this_combat) or (spell.is_berzerk_grr and unit.grr_used_this_combat):
+			return false
+		return unit.rage - spell.ev_extra_flat_cost >= spell.ev_cost_min
+	if spell.is_ev_cost_spell:
+		return unit.current_hp - 1 - spell.ev_extra_flat_cost >= spell.ev_cost_min
+	if spell.is_pa_cost_spell:
+		return unit.current_ea - spell.ev_extra_flat_cost >= spell.ev_cost_min
+	if spell.is_initial_cost:
+		return unit.current_ea >= _compute_initial_cost(unit, spell)
+	return unit.current_ea >= spell.get_effective_ea_cost(unit)
+
 # Calcule le montant d'un coût "(i)" (voir Spell.is_initial_cost) —
 # soit une valeur fixe (ea_cost), soit un pourcentage du max_ea ACTUEL
 # du lanceur (voir initial_cost_is_percent/initial_cost_percent_value,
@@ -834,7 +872,7 @@ func _deduct_initial_cost(caster: CombatUnit, spell: Spell) -> void:
 	caster._recalculate_stats()
 	caster.current_ea = min(caster.current_ea, caster.max_ea)
 	spawn_floating_text(caster.position, "-%d EA max" % amount, Color(0.75, 0.25, 0.55))
-	print("%s perd %d EA MAXIMUM de façon permanente pour %s." % [caster.unit_name, amount, spell.spell_name])
+	_log("%s perd %d EA MAXIMUM de façon permanente pour %s." % [caster.unit_name, amount, spell.spell_name])
 
 func confirm_substitution(spell: Spell, stat_up: String, stat_down: String) -> void:
 	var caster = active_unit
@@ -847,7 +885,7 @@ func confirm_substitution(spell: Spell, stat_up: String, stat_down: String) -> v
 	var roll = randi_range(1, 20)
 	if roll >= caster.intelligence_stat:
 		spawn_floating_text(caster.position, "Substitution ratée", Color(0.65, 0.65, 0.65))
-		print("%s rate son test d'Intelligence pour Substitution (jet %d >= %d)." % [caster.unit_name, roll, caster.intelligence_stat])
+		_log("%s rate son test d'Intelligence pour Substitution (jet %d >= %d)." % [caster.unit_name, roll, caster.intelligence_stat])
 		_refund_failed_cast(caster, ea_cost)
 		cancel_targeting_mode()
 		if _turn_manager != null:
@@ -861,7 +899,7 @@ func confirm_substitution(spell: Spell, stat_up: String, stat_down: String) -> v
 	buff.set(stat_down, -4)
 	caster.add_status_effect(buff)
 	spawn_floating_text(caster.position, buff.effect_name, Color(0.8, 0.6, 0.9))
-	print("%s réussit Substitution : %s." % [caster.unit_name, buff.effect_name])
+	_log("%s réussit Substitution : %s." % [caster.unit_name, buff.effect_name])
 
 	cancel_targeting_mode()
 	if _turn_manager != null:
@@ -872,10 +910,17 @@ func confirm_substitution(spell: Spell, stat_up: String, stat_down: String) -> v
 # maintenant sa cible/zone/case, le coût ayant déjà été payé au lancer
 # initial (voir _cast_spell, _cast_summon_spell, confirm_terrain_selection
 # — chacun vérifie caster.pending_spell == spell pour ne pas repayer).
+# Portée d'un sort ; un sort sur allié (soin/buff) peut aussi viser le lanceur.
+func _spell_range_with_self(unit: CombatUnit, spell: Spell) -> Dictionary:
+	var cells: Dictionary = get_cells_in_range(unit.hex_coord, spell.min_range, spell.max_range)
+	if spell.target_mode == Spell.TargetMode.SINGLE_ALLY:
+		cells[unit.hex_coord] = 0
+	return cells
+
 func begin_delayed_targeting(unit: CombatUnit, spell: Spell) -> void:
 	set_active_unit(unit)
 	_casting_spell = spell
-	_spell_range_cells = get_cells_in_range(unit.hex_coord, spell.min_range, spell.max_range)
+	_spell_range_cells = _spell_range_with_self(unit, spell)
 	_reset_zone_orientation()
 	queue_redraw()
 
@@ -910,7 +955,7 @@ func _apply_parallel_plane(a: CombatUnit, b: CombatUnit, turns: int) -> void:
 	_set_plane_tint(b, true)
 	spawn_floating_text(a.position, "Plan parallèle (%d)" % turns, Color(0.7, 0.55, 1.0))
 	spawn_floating_text(b.position, "Plan parallèle (%d)" % turns, Color(0.7, 0.55, 1.0))
-	print("%s et %s sont isolés dans un plan parallèle pendant %d tours." % [a.unit_name, b.unit_name, turns])
+	_log("%s et %s sont isolés dans un plan parallèle pendant %d tours." % [a.unit_name, b.unit_name, turns])
 
 func _end_parallel_plane(u: CombatUnit) -> void:
 	var partner = u.parallel_partner
@@ -1146,6 +1191,17 @@ func _handle_spell_target_click(coord: Vector2i) -> void:
 		_cast_summon_spell(active_unit, _casting_spell, coord)
 		return
 
+	# Pièges : pose, désamorçage, détection de zone — ciblage d'une case.
+	if _casting_spell.is_trap_spell:
+		_cast_trap_spell(active_unit, _casting_spell, coord)
+		return
+	if _casting_spell.is_disarm_skill:
+		_cast_disarm(active_unit, _casting_spell, coord)
+		return
+	if _casting_spell.is_detect_skill:
+		_cast_detect_zone(active_unit, _casting_spell, coord)
+		return
+
 	# Sorts de terrain (mur, pont, retrait d'obstacle) : sélection
 	# manuelle case par case par le joueur, validée via un bouton dédié
 	# plutôt que résolue automatiquement au premier clic — voir
@@ -1375,7 +1431,7 @@ func _resolve_barde_tranquillo(caster: CombatUnit) -> void:
 		enemy.add_status_effect(stun)
 		spawn_floating_text(enemy.position, "Endormi !", Color(0.6, 0.7, 0.95))
 
-	print("%s lance Tranquillo sur %d ennemi(s) (%d EA)." % [caster.unit_name, enemies.size(), cost])
+	_log("%s lance Tranquillo sur %d ennemi(s) (%d EA)." % [caster.unit_name, enemies.size(), cost])
 
 # Meno (Barde) : coût et durée entièrement dérivés du Charisme du
 # lanceur (2×(Charisme-12), voir Spell.barde_cost_multiplier) — tous
@@ -1396,7 +1452,7 @@ func _resolve_barde_meno(caster: CombatUnit) -> void:
 		enemy.add_status_effect(debuff)
 		spawn_floating_text(enemy.position, "Affaibli !", Color(0.75, 0.4, 0.3))
 
-	print("%s lance Meno (%d tours, %d EA)." % [caster.unit_name, duration, cost])
+	_log("%s lance Meno (%d tours, %d EA)." % [caster.unit_name, duration, cost])
 
 # Slancio (Barde) : même principe que Meno (coût/durée dérivés du
 # Charisme, 7×(Charisme-12)) — un allié gagne +1 Courage, +1 Attaque,
@@ -1416,7 +1472,7 @@ func _resolve_barde_slancio(caster: CombatUnit, target: CombatUnit) -> void:
 	target.add_status_effect(buff)
 	spawn_floating_text(target.position, "Élan !", Color(0.9, 0.7, 0.3))
 
-	print("%s lance Slancio sur %s (%d tours, %d EA)." % [caster.unit_name, target.unit_name, duration, cost])
+	_log("%s lance Slancio sur %s (%d tours, %d EA)." % [caster.unit_name, target.unit_name, duration, cost])
 
 # Porte étendard (Soldat) : test Cou/Cha (1d20 < moy(Courage,
 # Charisme)) ; si réussi, tout allié actuellement adjacent à `coord`
@@ -1433,7 +1489,7 @@ func _resolve_berzerk_tourbillon(caster: CombatUnit) -> void:
 		return
 	var attack_spell = caster.equipped_weapon.create_attack_spell()
 	var targets_hit = _all_units.filter(func(u): return u != caster and hex_distance(caster.hex_coord, u.hex_coord) == 1)
-	print("%s déclenche Tourbillon sur %d cible(s)." % [caster.unit_name, targets_hit.size()])
+	_log("%s déclenche Tourbillon sur %d cible(s)." % [caster.unit_name, targets_hit.size()])
 	for target in targets_hit:
 		_resolve_weapon_attack(caster, attack_spell, target)
 
@@ -1442,12 +1498,12 @@ func _resolve_porte_etendard(caster: CombatUnit, spell: Spell, coord: Vector2i) 
 	var roll = randi_range(1, 20)
 	if roll >= avg_stat:
 		spawn_floating_text(caster.position, "Porte étendard raté", Color(0.65, 0.65, 0.65))
-		print("%s rate son test Cou/Cha pour Porte étendard (jet %d >= %.1f)." % [caster.unit_name, roll, avg_stat])
+		_log("%s rate son test Cou/Cha pour Porte étendard (jet %d >= %.1f)." % [caster.unit_name, roll, avg_stat])
 		_refund_failed_cast(caster, spell.get_effective_ea_cost(caster))
 		return
 
 	spawn_floating_text(axial_to_pixel(coord), "Étendard planté !", Color(0.85, 0.75, 0.3))
-	print("%s plante un étendard." % caster.unit_name)
+	_log("%s plante un étendard." % caster.unit_name)
 
 	for ally in _get_team_including_self(caster):
 		if hex_distance(coord, ally.hex_coord) == 1:
@@ -1469,7 +1525,7 @@ func _resolve_peinture_de_guerre(caster: CombatUnit, spell: Spell = null) -> voi
 	var roll = randi_range(1, 20)
 	if roll >= caster.courage:
 		spawn_floating_text(caster.position, "Peinture de guerre ratée", Color(0.65, 0.65, 0.65))
-		print("%s rate son test de Courage pour Peinture de guerre (jet %d >= %d)." % [caster.unit_name, roll, caster.courage])
+		_log("%s rate son test de Courage pour Peinture de guerre (jet %d >= %d)." % [caster.unit_name, roll, caster.courage])
 		if spell != null:
 			_refund_failed_cast(caster, spell.get_effective_ea_cost(caster))
 		return
@@ -1484,7 +1540,7 @@ func _resolve_peinture_de_guerre(caster: CombatUnit, spell: Spell = null) -> voi
 		ally.add_status_effect(buff)
 		spawn_floating_text(ally.position, "+%d COU, +%d FO" % [bonus, bonus], Color(0.9, 0.7, 0.3))
 
-	print("%s réussit Peinture de guerre : +%d Courage/Force au groupe." % [caster.unit_name, bonus])
+	_log("%s réussit Peinture de guerre : +%d Courage/Force au groupe." % [caster.unit_name, bonus])
 
 # Maquillage (Peintre) : SANS effet mécanique pour l'instant (voir la
 # note de Spell.is_peintre_maquillage — son vrai intérêt n'a de sens
@@ -1498,10 +1554,10 @@ func _resolve_peintre_maquillage(caster: CombatUnit, spell: Spell = null) -> voi
 	var roll = randi_range(1, 20)
 	if roll < avg_stat:
 		spawn_floating_text(caster.position, "Maquillage réussi !", Color(0.8, 0.6, 0.9))
-		print("%s prend l'apparence de quelqu'un d'autre (cosmétique)." % caster.unit_name)
+		_log("%s prend l'apparence de quelqu'un d'autre (cosmétique)." % caster.unit_name)
 	else:
 		spawn_floating_text(caster.position, "Maquillage raté", Color(0.65, 0.65, 0.65))
-		print("%s rate son Maquillage (jet %d >= %.1f)." % [caster.unit_name, roll, avg_stat])
+		_log("%s rate son Maquillage (jet %d >= %.1f)." % [caster.unit_name, roll, avg_stat])
 		if spell != null:
 			_refund_failed_cast(caster, spell.get_effective_ea_cost(caster))
 
@@ -1566,7 +1622,7 @@ func _revive_unit(corpse: CombatUnit, near: CombatUnit, hp: int, penalties: bool
 			best_dist = d
 			best_cell = coord
 	if best_cell == null:
-		print("Plus de case libre pour ressusciter %s." % corpse.unit_name)
+		_log("Plus de case libre pour ressusciter %s." % corpse.unit_name)
 		return false
 
 	if penalties:
@@ -1605,7 +1661,7 @@ func _revive_unit(corpse: CombatUnit, near: CombatUnit, hp: int, penalties: bool
 	if _turn_manager != null:
 		_turn_manager.add_unit_to_turn_order(corpse, active_unit if active_unit != null else near)
 	spawn_floating_text(corpse.position, "Ressuscité !", Color(0.95, 0.9, 0.5))
-	print("%s est ressuscité (%d PV)." % [corpse.unit_name, corpse.current_hp])
+	_log("%s est ressuscité (%d PV)." % [corpse.unit_name, corpse.current_hp])
 	_refresh_tanker_auras()
 	queue_redraw()
 	return true
@@ -1624,7 +1680,7 @@ func _resolve_un_pour_tous(caster: CombatUnit, ally: CombatUnit) -> void:
 	ally.redirect_effect = malus
 	spawn_floating_text(ally.position, "Protégé (3)", Color(0.85, 0.75, 0.3))
 	spawn_floating_text(caster.position, "-3 AT", Color(0.85, 0.5, 0.3))
-	print("%s protège %s : les 3 prochains dégâts iront au gladiateur." % [caster.unit_name, ally.unit_name])
+	_log("%s protège %s : les 3 prochains dégâts iront au gladiateur." % [caster.unit_name, ally.unit_name])
 
 func _resolve_ninja_permutation(caster: CombatUnit, target: CombatUnit) -> void:
 	var caster_coord = caster.hex_coord
@@ -1640,7 +1696,7 @@ func _resolve_ninja_permutation(caster: CombatUnit, target: CombatUnit) -> void:
 
 	caster.ninja_permutations_used += 1
 	spawn_floating_text(caster.position, "Permutation !", Color(0.5, 0.4, 0.75))
-	print("%s permute avec %s." % [caster.unit_name, target.unit_name])
+	_log("%s permute avec %s." % [caster.unit_name, target.unit_name])
 
 func _resolve_meca_doc_heal(caster: CombatUnit, target: CombatUnit, tier: int) -> void:
 	var healed_hp = 0
@@ -1665,7 +1721,7 @@ func _resolve_meca_doc_heal(caster: CombatUnit, target: CombatUnit, tier: int) -
 		if actual_ea > 0:
 			spawn_floating_text(target.position + Vector2(0, -18), "+%d EA" % actual_ea, Color(0.55, 0.75, 0.95))
 
-	print("%s soigne %s (%d PV, %d EA)." % [caster.unit_name, target.unit_name, healed_hp, healed_ea])
+	_log("%s soigne %s (%d PV, %d EA)." % [caster.unit_name, target.unit_name, healed_hp, healed_ea])
 
 # Support (Méca) : +AT (choix AT/PRD non modélisé, toujours AT par
 # simplicité — voir Spell.is_meca_support_buff) pendant 1 tour, +FO en
@@ -1687,7 +1743,7 @@ func _resolve_meca_support_buff(caster: CombatUnit, target: CombatUnit, tier: in
 		buff.effect_name = "Soutien du Méca (+%d %s, +1 Force)" % [amount, stat_label]
 	target.add_status_effect(buff)
 	spawn_floating_text(target.position, buff.effect_name, Color(0.6, 0.9, 0.6))
-	print("%s soutient %s." % [caster.unit_name, target.unit_name])
+	_log("%s soutient %s." % [caster.unit_name, target.unit_name])
 
 # Fait apparaître une invocation sur la case cliquée, dans l'équipe du
 # lanceur, et l'insère dans l'ordre du tour juste après lui pour
@@ -1697,7 +1753,7 @@ func _cast_summon_spell(caster: CombatUnit, spell: Spell, coord: Vector2i) -> vo
 	# le métier Ingénieur Automate). Vérifiée avant toute consommation
 	# d'action/EA : un clic refusé ne doit rien coûter.
 	if spell.is_meca_summon and caster.mecas_summoned_this_combat >= 2:
-		print("%s a déjà invoqué 2 Mécas ce combat (maximum)." % caster.unit_name)
+		_log("%s a déjà invoqué 2 Mécas ce combat (maximum)." % caster.unit_name)
 		cancel_targeting_mode()
 		return
 
@@ -1737,7 +1793,7 @@ func _cast_summon_spell(caster: CombatUnit, spell: Spell, coord: Vector2i) -> vo
 		_turn_manager.add_unit_to_turn_order(summon, caster)
 
 	spawn_floating_text(summon.position, "Invocation !", Color(0.6, 0.9, 1.0))
-	print("%s invoque %s !" % [caster.unit_name, summon.unit_name])
+	_log("%s invoque %s !" % [caster.unit_name, summon.unit_name])
 
 	if is_delayed_resolution:
 		caster.clear_channeling()
@@ -1827,7 +1883,7 @@ func confirm_terrain_selection() -> void:
 				affected += 1
 
 	spawn_floating_text(caster.position, "%d case(s) affectée(s)" % affected, Color(0.5, 0.8, 0.95))
-	print("%s valide %s sur %s." % [caster.unit_name, spell.spell_name, str(_terrain_selection_cells)])
+	_log("%s valide %s sur %s." % [caster.unit_name, spell.spell_name, str(_terrain_selection_cells)])
 
 	if is_delayed_resolution:
 		caster.clear_channeling()
@@ -1854,14 +1910,14 @@ func _cast_spell(caster: CombatUnit, spell: Spell, targets: Array) -> void:
 
 	# PI d'ogre : 3 PI au maximum par combat.
 	if spell.is_ogre_pi and caster.ogre_pi_converted + spell.ogre_pi_x > 3:
-		print("%s ne peut plus convertir autant de PI (3 maximum)." % caster.unit_name)
+		_log("%s ne peut plus convertir autant de PI (3 maximum)." % caster.unit_name)
 		cancel_targeting_mode()
 		return
 
 	# Un pour tous : il faut un allié autre que soi, pas déjà protégé.
 	if spell.is_un_pour_tous:
 		if targets.is_empty() or targets[0] == caster or targets[0].redirect_charges > 0:
-			print("%s : Un pour tous impossible sur cette cible." % caster.unit_name)
+			_log("%s : Un pour tous impossible sur cette cible." % caster.unit_name)
 			cancel_targeting_mode()
 			return
 
@@ -1877,38 +1933,38 @@ func _cast_spell(caster: CombatUnit, spell: Spell, targets: Array) -> void:
 	if not targets.is_empty() and not spell.is_parallel_plane:
 		targets = targets.filter(func(t): return can_interact(caster, t))
 		if targets.is_empty():
-			print("%s ne peut atteindre personne (plan parallèle)." % caster.unit_name)
+			_log("%s ne peut atteindre personne (plan parallèle)." % caster.unit_name)
 			cancel_targeting_mode()
 			return
 	# Ressources dédiées (Bravoure/Précision des hobbits) : vérifiées
 	# AVANT toute consommation d'action/EA — un clic sur un bouton à
 	# 0 utilisation restante ne doit rien coûter.
 	if spell.is_hobbit_bravoure and caster.hobbit_bravoure_uses <= 0:
-		print("%s n'a plus d'utilisation de Bravoure des hobbits ce combat." % caster.unit_name)
+		_log("%s n'a plus d'utilisation de Bravoure des hobbits ce combat." % caster.unit_name)
 		cancel_targeting_mode()
 		return
 	if spell.is_detect_skill and caster.detect_uses <= 0:
-		print("%s n'a plus de charge de Détecter ce combat." % caster.unit_name)
+		_log("%s n'a plus de charge de Détecter ce combat." % caster.unit_name)
 		cancel_targeting_mode()
 		return
 	if spell.is_hobbit_precision and caster.hobbit_stones <= 0:
-		print("%s n'a plus de caillou à lancer." % caster.unit_name)
+		_log("%s n'a plus de caillou à lancer." % caster.unit_name)
 		cancel_targeting_mode()
 		return
 	if spell.is_ninja_permutation and caster.ninja_permutations_used >= 3:
-		print("%s a déjà utilisé Permutation 3 fois ce combat (maximum)." % caster.unit_name)
+		_log("%s a déjà utilisé Permutation 3 fois ce combat (maximum)." % caster.unit_name)
 		cancel_targeting_mode()
 		return
 	if spell.is_peintre_peinture_de_guerre and caster.peintre_peinture_de_guerre_used:
-		print("%s a déjà utilisé Peinture de guerre ce combat (maximum 1 fois)." % caster.unit_name)
+		_log("%s a déjà utilisé Peinture de guerre ce combat (maximum 1 fois)." % caster.unit_name)
 		cancel_targeting_mode()
 		return
 	if spell.is_peintre_maquillage and caster.peintre_maquillage_used >= 3:
-		print("%s a déjà utilisé Maquillage 3 fois ce combat (maximum)." % caster.unit_name)
+		_log("%s a déjà utilisé Maquillage 3 fois ce combat (maximum)." % caster.unit_name)
 		cancel_targeting_mode()
 		return
 	if spell.is_corsaire_salve and caster.corsaire_salve_used:
-		print("%s a déjà utilisé Salve ce combat (maximum 1 fois)." % caster.unit_name)
+		_log("%s a déjà utilisé Salve ce combat (maximum 1 fois)." % caster.unit_name)
 		cancel_targeting_mode()
 		return
 
@@ -1919,29 +1975,29 @@ func _cast_spell(caster: CombatUnit, spell: Spell, targets: Array) -> void:
 	if spell.is_barde_tranquillo:
 		var tranquillo_cost = 2 + _get_opposing_team(caster).size()
 		if caster.current_ea < tranquillo_cost:
-			print("%s n'a pas assez d'EA pour Tranquillo (%d requis)." % [caster.unit_name, tranquillo_cost])
+			_log("%s n'a pas assez d'EA pour Tranquillo (%d requis)." % [caster.unit_name, tranquillo_cost])
 			cancel_targeting_mode()
 			return
 	if spell.is_barde_meno or spell.is_barde_slancio:
 		var cha_duration = max(1, caster.charisme_stat - 12)
 		var cha_cost = spell.barde_cost_multiplier * cha_duration
 		if caster.current_ea < cha_cost:
-			print("%s n'a pas assez d'EA pour %s (%d requis)." % [caster.unit_name, spell.spell_name, cha_cost])
+			_log("%s n'a pas assez d'EA pour %s (%d requis)." % [caster.unit_name, spell.spell_name, cha_cost])
 			cancel_targeting_mode()
 			return
 
 	# Frappe puissante/Tourbillon (Berzerk) : coût fixe en Rage (pas en
 	# EA) — vérifié et déduit ICI, avant toute résolution.
 	if (spell.is_berzerk_frappe_puissante or spell.is_berzerk_tourbillon) and caster.rage < spell.rage_cost:
-		print("%s n'a pas assez de Rage pour %s (%d requise)." % [caster.unit_name, spell.spell_name, spell.rage_cost])
+		_log("%s n'a pas assez de Rage pour %s (%d requise)." % [caster.unit_name, spell.spell_name, spell.rage_cost])
 		cancel_targeting_mode()
 		return
 	if spell.is_berzerk_grr and caster.grr_used_this_combat:
-		print("%s a déjà utilisé GRRRBL ce combat (maximum 1 fois)." % caster.unit_name)
+		_log("%s a déjà utilisé GRRRBL ce combat (maximum 1 fois)." % caster.unit_name)
 		cancel_targeting_mode()
 		return
 	if spell.is_berzerk_raaah and caster.raaah_used_this_combat:
-		print("%s a déjà utilisé Raaah ce combat (maximum 1 fois)." % caster.unit_name)
+		_log("%s a déjà utilisé Raaah ce combat (maximum 1 fois)." % caster.unit_name)
 		cancel_targeting_mode()
 		return
 
@@ -1963,6 +2019,8 @@ func _cast_spell(caster: CombatUnit, spell: Spell, targets: Array) -> void:
 
 	if not is_delayed_resolution:
 		caster.record_action_taken(spell)
+		if spell.arrow_used != null and spell.arrow_used.quantity > 0:
+			spell.arrow_used.quantity -= 1  # La flèche part avec le tir (pas à la sélection).
 
 		if spell.gloire_cost > 0:
 			caster.gloire -= spell.gloire_cost
@@ -1989,12 +2047,12 @@ func _cast_spell(caster: CombatUnit, spell: Spell, targets: Array) -> void:
 		var detect_threshold: int = caster.intelligence_stat + 2 + get_skill_test_bonus(caster)
 		if detect_roll >= detect_threshold:
 			spawn_floating_text(caster.position, "Détection ratée", Color(0.65, 0.65, 0.65))
-			print("%s rate son test de Détecter (jet %d, seuil %d)." % [caster.unit_name, detect_roll, detect_threshold])
+			_log("%s rate son test de Détecter (jet %d, seuil %d)." % [caster.unit_name, detect_roll, detect_threshold])
 			cancel_targeting_mode()
 			if _turn_manager != null:
 				_turn_manager.refresh_ui()
 			return
-		print("%s réussit son test de Détecter (jet %d, seuil %d), %d charge(s) restante(s)." % [caster.unit_name, detect_roll, detect_threshold, caster.detect_uses])
+		_log("%s réussit son test de Détecter (jet %d, seuil %d), %d charge(s) restante(s)." % [caster.unit_name, detect_roll, detect_threshold, caster.detect_uses])
 
 	if spell.is_hobbit_bravoure:
 		_resolve_hobbit_bravoure(caster, spell.bravoure_x)
@@ -2060,7 +2118,7 @@ func _cast_spell(caster: CombatUnit, spell: Spell, targets: Array) -> void:
 			_apply_parallel_plane(targets[0], targets[1], spell.parallel_plane_turns)
 		else:
 			spawn_floating_text(caster.position, "Plan parallèle raté", Color(0.65, 0.65, 0.65))
-			print("%s rate Plan parallèle (jet %d >= %.1f)." % [caster.unit_name, plane_roll, plane_avg])
+			_log("%s rate Plan parallèle (jet %d >= %.1f)." % [caster.unit_name, plane_roll, plane_avg])
 			_refund_failed_cast(caster, spell.get_effective_ea_cost(caster))
 		cancel_targeting_mode()
 		if _turn_manager != null:
@@ -2164,7 +2222,7 @@ func _cast_spell(caster: CombatUnit, spell: Spell, targets: Array) -> void:
 	# coûte bien l'EA/l'action, mais n'a aucun effet — juste son texte
 	# d'origine affiché, en attendant du code sur-mesure pour ce sort précis.
 	if spell.is_unimplemented:
-		print("%s lance %s : %s (PAS ENCORE IMPLÉMENTÉ)" % [caster.unit_name, spell.spell_name, spell.info_text])
+		_log("%s lance %s : %s (PAS ENCORE IMPLÉMENTÉ)" % [caster.unit_name, spell.spell_name, spell.info_text])
 		if not targets.is_empty():
 			spawn_floating_text(targets[0].position, spell.info_text, Color(0.6, 0.6, 0.6))
 		else:
@@ -2189,11 +2247,11 @@ func _cast_spell(caster: CombatUnit, spell: Spell, targets: Array) -> void:
 	if spell.cast_delay > 0 and not is_delayed_resolution:
 		caster.start_channeling(spell)
 		spawn_floating_text(caster.position, "Incantation... (%d)" % spell.cast_delay, Color(0.7, 0.5, 0.95))
-		print("%s commence à canaliser %s (%d tour(s))." % [caster.unit_name, spell.spell_name, spell.cast_delay])
+		_log("%s commence à canaliser %s (%d tour(s))." % [caster.unit_name, spell.spell_name, spell.cast_delay])
 	elif spell.is_weapon_attack:
 		# Une attaque d'arme reste toujours un ciblage simple (1 cible) —
 		# le catalogue de sorts d'armes ne connaît pas Zone/Groupe.
-		_resolve_weapon_attack(caster, spell, targets[0])
+		_resolve_weapon_attack_with_arrow(caster, spell, targets[0])
 	else:
 		_resolve_spell_effect(caster, spell, targets)
 
@@ -2235,10 +2293,10 @@ func resolve_pending_spell(caster: CombatUnit) -> void:
 	caster.clear_channeling()
 
 	if spell == null or targets.is_empty():
-		print("%s : la canalisation se dissipe (plus aucune cible valide)." % caster.unit_name)
+		_log("%s : la canalisation se dissipe (plus aucune cible valide)." % caster.unit_name)
 		return
 
-	print("%s termine sa canalisation : %s se déclenche !" % [caster.unit_name, spell.spell_name])
+	_log("%s termine sa canalisation : %s se déclenche !" % [caster.unit_name, spell.spell_name])
 	_resolve_spell_effect(caster, spell, targets)
 	queue_redraw()
 
@@ -2262,10 +2320,10 @@ func _resolve_hobbit_bravoure(caster: CombatUnit, x: int) -> void:
 		buff.bonus_force = x
 		caster.add_status_effect(buff)
 		spawn_floating_text(caster.position, "+%d Force !" % x, Color(0.9, 0.7, 0.3))
-		print("%s réussit son test de Courage-%d (jet %d) : +%d Force." % [caster.unit_name, x, roll, x])
+		_log("%s réussit son test de Courage-%d (jet %d) : +%d Force." % [caster.unit_name, x, roll, x])
 	else:
 		spawn_floating_text(caster.position, "Test raté", Color(0.65, 0.65, 0.65))
-		print("%s rate son test de Courage-%d (jet %d)." % [caster.unit_name, x, roll])
+		_log("%s rate son test de Courage-%d (jet %d)." % [caster.unit_name, x, roll])
 
 # Précision des hobbits : jet d'Adresse-3 pour toucher, dégâts
 # 1D6 + Courage/2 (arrondi au dessous) en cas de réussite, réduits par
@@ -2279,7 +2337,7 @@ func _resolve_hobbit_precision(caster: CombatUnit, target: CombatUnit) -> void:
 	var hit_roll = randi_range(1, 20)
 	if hit_roll >= caster.adresse_stat - 3:
 		spawn_floating_text(target.position, "Raté", Color(0.65, 0.65, 0.65))
-		print("%s rate son caillou sur %s (jet %d, Adresse-3 %d)." % [caster.unit_name, target.unit_name, hit_roll, caster.adresse_stat - 3])
+		_log("%s rate son caillou sur %s (jet %d, Adresse-3 %d)." % [caster.unit_name, target.unit_name, hit_roll, caster.adresse_stat - 3])
 		return
 
 	if _try_dodge(target, caster, hit_roll == 1):
@@ -2292,7 +2350,7 @@ func _resolve_hobbit_precision(caster: CombatUnit, target: CombatUnit) -> void:
 	damage = max(0, damage - target.armor_value)
 	target.take_damage(damage, hit_roll == 1)
 	spawn_floating_text(target.position, "-%d" % damage, Color(0.95, 0.3, 0.3))
-	print("%s touche %s avec un caillou (%d dégâts)." % [caster.unit_name, target.unit_name, damage])
+	_log("%s touche %s avec un caillou (%d dégâts)." % [caster.unit_name, target.unit_name, damage])
 
 # Concentration (Samurai) : renonce à toute défense (Parade/Esquive)
 # jusqu'à son prochain tour, en échange d'un bonus sur sa PROCHAINE
@@ -2310,7 +2368,7 @@ func _resolve_samurai_concentration(caster: CombatUnit) -> void:
 	caster.add_status_effect(buff)
 
 	spawn_floating_text(caster.position, "Concentration !", Color(0.9, 0.3, 0.3))
-	print("%s se concentre : sans défense jusqu'à son prochain tour, prochaine attaque doublée et perçante." % caster.unit_name)
+	_log("%s se concentre : sans défense jusqu'à son prochain tour, prochaine attaque doublée et perçante." % caster.unit_name)
 
 # Noirceur (Prêtre, Ordre du néant) : la nuit s'installe sur TOUT le
 # champ de bataille pendant `duration` tours (décomptés une fois par
@@ -2348,7 +2406,7 @@ func _install_night(caster: CombatUnit, duration: int) -> void:
 				unit.add_status_effect(maitre_de_la_nuit)
 
 	spawn_floating_text(caster.position, "La nuit tombe...", Color(0.35, 0.3, 0.55))
-	print("%s installe la nuit sur le champ de bataille (%d tour(s))." % [caster.unit_name, duration])
+	_log("%s installe la nuit sur le champ de bataille (%d tour(s))." % [caster.unit_name, duration])
 
 # Fin de la nuit (voir _install_night) : retire les 2 bonus de TOUT
 # Prêtre qui les porte, par leur nom exact (pas par expiration
@@ -2361,7 +2419,7 @@ func _end_night() -> void:
 		unit.active_effects = unit.active_effects.filter(func(e): return e.effect_name != "Être nocturne (nuit)" and e.effect_name != "Maître de la nuit (nuit)")
 		if unit.active_effects.size() != before:
 			unit._recalculate_stats()
-	print("La nuit se termine sur le champ de bataille.")
+	_log("La nuit se termine sur le champ de bataille.")
 
 # Appelée par TurnManager à chaque fois que c'est RÉ-au tour du joueur
 # (un "round" complet, voir _start_current_turn) — décompte la nuit en
@@ -2383,7 +2441,7 @@ func _resolve_equilibre_parfait(caster: CombatUnit) -> void:
 		if unit.current_hp > 0:
 			unit.current_hp = min(randi_range(1, 100), unit.max_hp)
 			spawn_floating_text(unit.position, "%d PV" % unit.current_hp, Color(0.85, 0.75, 0.3))
-	print("%s déclenche Équilibre parfait : PV de tout le monde réinitialisés." % caster.unit_name)
+	_log("%s déclenche Équilibre parfait : PV de tout le monde réinitialisés." % caster.unit_name)
 
 # Invoque la balance de l'univers (Prêtre) : soigne tout le camp du
 # lanceur et inflige les mêmes dégâts (3D, voir dice_terms) à tout le
@@ -2404,14 +2462,14 @@ func _resolve_balance_univers(caster: CombatUnit, spell: Spell) -> void:
 			if healed > 0:
 				ally.current_hp += healed
 				spawn_floating_text(ally.position, "+%d" % healed, Color(0.35, 0.9, 0.5))
-		print("%s invoque la balance de l'univers : soin (%d)." % [caster.unit_name, roll])
+		_log("%s invoque la balance de l'univers : soin (%d)." % [caster.unit_name, roll])
 	else:
 		for enemy in _get_opposing_team(caster):
 			if not can_interact(caster, enemy):
 				continue
 			enemy.take_damage(roll)
 			spawn_floating_text(enemy.position, "-%d" % roll, Color(0.95, 0.3, 0.3))
-		print("%s invoque la balance de l'univers : dégâts (%d)." % [caster.unit_name, roll])
+		_log("%s invoque la balance de l'univers : dégâts (%d)." % [caster.unit_name, roll])
 	caster.balance_next_is_damage = not caster.balance_next_is_damage
 
 # Sorts à coût en PV (branche Walkyrie — voir Spell.is_ev_cost_spell) :
@@ -2427,15 +2485,15 @@ func _resolve_ev_cost_spell(caster: CombatUnit, spell: Spell, targets: Array, x:
 	if spell.is_pa_cost_spell:
 		caster.current_ea = max(0, caster.current_ea - total_cost)
 		spawn_floating_text(caster.position, "-%d EA" % total_cost, Color(0.55, 0.35, 0.85))
-		print("%s paie %d PA pour %s." % [caster.unit_name, total_cost, spell.spell_name])
+		_log("%s paie %d PA pour %s." % [caster.unit_name, total_cost, spell.spell_name])
 	elif spell.is_rage_cost_spell:
 		caster.rage = max(0, caster.rage - total_cost)
 		spawn_floating_text(caster.position, "-%d Rage" % total_cost, Color(0.8, 0.2, 0.15))
-		print("%s dépense %d Rage pour %s." % [caster.unit_name, total_cost, spell.spell_name])
+		_log("%s dépense %d Rage pour %s." % [caster.unit_name, total_cost, spell.spell_name])
 	else:
 		caster.current_hp = max(1, caster.current_hp - total_cost)
 		spawn_floating_text(caster.position, "-%d PV" % total_cost, Color(0.75, 0.15, 0.15))
-		print("%s paie %d PV pour %s." % [caster.unit_name, total_cost, spell.spell_name])
+		_log("%s paie %d PV pour %s." % [caster.unit_name, total_cost, spell.spell_name])
 
 	var bonus_value = int(x / float(spell.ev_x_divisor)) * spell.ev_x_multiplier + spell.ev_x_flat_bonus
 	if spell.includes_caster_level:
@@ -2448,7 +2506,7 @@ func _resolve_ev_cost_spell(caster: CombatUnit, spell: Spell, targets: Array, x:
 		var permanent_bonus = int(x / 10.0)
 		caster.berzerk_permanent_damage_bonus += permanent_bonus
 		spawn_floating_text(caster.position, "+%d dégâts permanents !" % permanent_bonus, Color(0.85, 0.2, 0.1))
-		print("%s convertit %d Rage en +%d dégâts permanents (Raaah)." % [caster.unit_name, x, permanent_bonus])
+		_log("%s convertit %d Rage en +%d dégâts permanents (Raaah)." % [caster.unit_name, x, permanent_bonus])
 		return
 
 	# GRRRBL (Berzerk) : X Rage -> X/10 PI pour le reste du combat, sur test
@@ -2460,10 +2518,10 @@ func _resolve_ev_cost_spell(caster: CombatUnit, spell: Spell, targets: Array, x:
 			var gained_pi = int(x / 10.0)
 			caster.pi += gained_pi
 			spawn_floating_text(caster.position, "+%d PI !" % gained_pi, Color(0.85, 0.2, 0.1))
-			print("%s convertit %d Rage en +%d PI (GRRRBL)." % [caster.unit_name, x, gained_pi])
+			_log("%s convertit %d Rage en +%d PI (GRRRBL)." % [caster.unit_name, x, gained_pi])
 		else:
 			spawn_floating_text(caster.position, "GRRRBL raté", Color(0.65, 0.65, 0.65))
-			print("%s rate GRRRBL (jet %d >= Courage %d)." % [caster.unit_name, grr_roll, caster.courage])
+			_log("%s rate GRRRBL (jet %d >= Courage %d)." % [caster.unit_name, grr_roll, caster.courage])
 		return
 
 	# Noirceur (Prêtre) : installe la nuit sur TOUT le champ de bataille
@@ -2482,7 +2540,7 @@ func _resolve_ev_cost_spell(caster: CombatUnit, spell: Spell, targets: Array, x:
 			var actual = min(amount, target.max_hp - target.current_hp)
 			target.current_hp += actual
 			spawn_floating_text(target.position, "+%d" % actual, Color(0.3, 0.9, 0.4))
-			print("%s convertit %d PA en %d PV pour %s." % [caster.unit_name, x, actual, target.unit_name])
+			_log("%s convertit %d PA en %d PV pour %s." % [caster.unit_name, x, actual, target.unit_name])
 		return
 
 	if spell.is_heal:
@@ -2505,14 +2563,14 @@ func _resolve_ev_cost_spell(caster: CombatUnit, spell: Spell, targets: Array, x:
 			var actual = min(amount, target.max_hp - target.current_hp)
 			target.current_hp += actual
 			spawn_floating_text(target.position, "+%d" % actual, Color(0.3, 0.9, 0.4))
-			print("%s soigne %s de %d PV." % [caster.unit_name, target.unit_name, actual])
+			_log("%s soigne %s de %d PV." % [caster.unit_name, target.unit_name, actual])
 		return
 
 	if spell.grants_weapon_magic_attacks:
 		for target in targets:
 			target.magic_weapon_attacks_remaining += bonus_value
 			spawn_floating_text(target.position, "Arme céleste (%d)" % bonus_value, Color(0.9, 0.85, 0.4))
-			print("%s : arme magique pour %d attaques." % [target.unit_name, bonus_value])
+			_log("%s : arme magique pour %d attaques." % [target.unit_name, bonus_value])
 		return
 
 	if spell.grants_shield_turns:
@@ -2541,7 +2599,7 @@ func _resolve_ev_cost_spell(caster: CombatUnit, spell: Spell, targets: Array, x:
 		for target in targets:
 			target.shield_power = bonus_value
 			spawn_floating_text(target.position, "Bouclier (%d)" % bonus_value, Color(0.95, 0.85, 0.4))
-			print("%s invoque un Bouclier de Foi de %d points sur %s." % [caster.unit_name, bonus_value, target.unit_name])
+			_log("%s invoque un Bouclier de Foi de %d points sur %s." % [caster.unit_name, bonus_value, target.unit_name])
 		return
 
 	# Effet à durée générique (ex: Être de lumière, "insensible à la
@@ -2574,10 +2632,13 @@ func _resolve_ev_cost_spell(caster: CombatUnit, spell: Spell, targets: Array, x:
 		avg_stat = (caster.intelligence_stat + caster.adresse_stat) / 2.0
 
 	var hit_roll = randi_range(1, 20)
+	if spell.spell_type == Spell.SpellType.NONE:
+		hit_roll = 2  # Aucun test : toujours réussi, jamais critique.
+		avg_stat = 999.0
 	if hit_roll >= avg_stat + spell.to_hit_modifier:
 		var miss_pos = targets[0].position if not targets.is_empty() else caster.position
 		spawn_floating_text(miss_pos, "Raté", Color(0.65, 0.65, 0.65))
-		print("%s rate %s (jet %d >= %d)." % [caster.unit_name, spell.spell_name, hit_roll, int(avg_stat + spell.to_hit_modifier)])
+		_log("%s rate %s (jet %d >= %d)." % [caster.unit_name, spell.spell_name, hit_roll, int(avg_stat + spell.to_hit_modifier)])
 		if spell.is_pa_cost_spell:
 			_refund_failed_cast(caster, total_cost)  # Seul le coût payé en EA est partiellement rendu.
 		return
@@ -2612,13 +2673,30 @@ func _resolve_ev_cost_spell(caster: CombatUnit, spell: Spell, targets: Array, x:
 		damage = max(0, damage - relevant_armor)
 		target.take_damage(damage, target_crit)
 		spawn_floating_text(target.position, "-%d" % damage, Color(0.95, 0.3, 0.3))
-		print("%s touche %s avec %s (%d dégâts)." % [caster.unit_name, target.unit_name, spell.spell_name, damage])
+		_log("%s touche %s avec %s (%d dégâts)." % [caster.unit_name, target.unit_name, spell.spell_name, damage])
 
 # `unavoidable` : attaque imparable (ni parade ni esquive possibles) — utilisée
 # pour l'attaque d'opportunité quand on quitte un corps à corps (voir move_unit).
 func _resolve_weapon_attack(caster: CombatUnit, spell: Spell, target: CombatUnit, unavoidable: bool = false) -> void:
 	caster.face_direction(target.position)
 	caster.play_animation("attack" if spell.is_melee_range() else "ranged_attack")
+
+	# Yukionna : le prochain assaut de l'unité touchée est raté d'office.
+	if caster.next_attack_misses:
+		caster.next_attack_misses = false
+		spawn_floating_text(caster.position, "Assaut raté !", Color(0.55, 0.8, 0.95))
+		return
+
+	# Regard de la Gorgone : quiconque l'attaque subit -5 AT/PRD/AD (impossible
+	# de la regarder dans les yeux). Posé AVANT le jet de toucher.
+	if bool(target.traits.get("gaze", false)):
+		_apply_gorgon_gaze(caster)
+
+	# Aigle électrique : test d'Adresse avant l'attaque pour pouvoir le toucher.
+	if bool(target.traits.get("ad_test_to_hit", false)) and spell.is_melee_range():
+		if randi_range(1, 20) >= caster.adresse_stat:
+			spawn_floating_text(target.position, "Insaisissable", Color(0.65, 0.65, 0.65))
+			return
 
 	# Camouflage Naturel (Rôdeur) : attaquer révèle, quel que soit le
 	# résultat du coup (touché ou raté) — retiré par son nom précis,
@@ -2654,6 +2732,8 @@ func _resolve_weapon_attack(caster: CombatUnit, spell: Spell, target: CombatUnit
 	# touche ou non — les dégâts sont traités comme magiques (réduits
 	# par l'armure magique de la cible plutôt que physique).
 	var use_magic_armor = false
+	if spell.arrow_used != null and spell.arrow_used.effect == "magic":
+		use_magic_armor = true  # Flèche/carreau éthéré : dégâts magiques.
 	if caster.magic_weapon_attacks_remaining > 0:
 		use_magic_armor = true
 		caster.magic_weapon_attacks_remaining -= 1
@@ -2671,7 +2751,7 @@ func _resolve_weapon_attack(caster: CombatUnit, spell: Spell, target: CombatUnit
 	var hit_roll = randi_range(1, 20)
 
 	if hit_roll >= effective_stat:
-		print("%s rate son attaque (jet %d >= %s %d, malus -%d)." % [
+		_log("%s rate son attaque (jet %d >= %s %d, malus -%d)." % [
 			caster.unit_name, hit_roll,
 			"Attaque" if spell.is_melee_range() else "Adresse",
 			effective_stat, malus
@@ -2689,7 +2769,7 @@ func _resolve_weapon_attack(caster: CombatUnit, spell: Spell, target: CombatUnit
 				and caster.samurai_melee_attacks_this_turn >= 2:
 			caster.samurai_combo_disabled_defense = true
 			spawn_floating_text(caster.position, "Combo raté !", Color(0.85, 0.3, 0.2))
-			print("%s perd sa défense jusqu'à son prochain tour (Combo raté)." % caster.unit_name)
+			_log("%s perd sa défense jusqu'à son prochain tour (Combo raté)." % caster.unit_name)
 
 		return
 
@@ -2721,7 +2801,7 @@ func _resolve_weapon_attack(caster: CombatUnit, spell: Spell, target: CombatUnit
 	var is_critical = hit_roll <= crit_threshold and not target_immune_to_crits
 	if is_critical:
 		spawn_floating_text(target.position, "Critique !", Color(1.0, 0.85, 0.2))
-		print("%s réalise un coup critique !" % caster.unit_name)
+		_log("%s réalise un coup critique !" % caster.unit_name)
 
 	# Gloire (Gladiateur) : +1 par attaque réussie — le propre jet du
 	# Gladiateur a touché, indépendamment de ce qu'en fait la cible
@@ -2733,6 +2813,7 @@ func _resolve_weapon_attack(caster: CombatUnit, spell: Spell, target: CombatUnit
 	# seulement) s'il est en posture Parade ET que sa défense n'est pas
 	# désactivée (voir Combo/Concentration, Samurai).
 	if not unavoidable and spell.is_melee_range() and not target.samurai_combo_disabled_defense \
+			and not bool(caster.traits.get("unparryable", false)) \
 			and target.defensive_stance == CombatUnit.DefensiveStance.PARRY:
 		var parry_roll = randi_range(1, 20)
 		# Face à un coup critique (jet d'attaque = 1), seul un 1 à la
@@ -2749,6 +2830,8 @@ func _resolve_weapon_attack(caster: CombatUnit, spell: Spell, target: CombatUnit
 
 		if parry_success:
 			spawn_floating_text(target.position, "Paré !", Color(0.9, 0.8, 0.2))
+			_log("%s pare l'attaque de %s." % [target.unit_name, caster.unit_name])
+			_try_weapon_break(caster, target)
 
 			# Maître d'armes : une attaque PARÉE remet aussi la série à 0.
 			if caster.has_metier("Maitre d'armes"):
@@ -2789,6 +2872,8 @@ func _resolve_weapon_attack(caster: CombatUnit, spell: Spell, target: CombatUnit
 	# Bonus de dégâts d'arme temporaire (Zéphir, Poings de terre,
 	# Enchantement...) — voir StatusEffect.bonus_weapon_dice_*.
 	effective_damage += _roll_weapon_bonus_dice(caster, spell.is_melee_range())
+	if spell.arrow_used != null and spell.arrow_used.effect == "vs_animal" and bool(target.traits.get("animal", false)):
+		effective_damage += 2
 
 	# Bourre pif (BP) : +1 dégât si l'attaque se fait à mains nues.
 	if caster.equipped_weapon != null and caster.equipped_weapon.weapon_name == "Poings" and caster.has_skill("BP"):
@@ -2807,6 +2892,9 @@ func _resolve_weapon_attack(caster: CombatUnit, spell: Spell, target: CombatUnit
 	# Points d'Impact (PI) : dégâts supplémentaires sur chaque attaque
 	# (Ogre, GRRRBL du Berzerk, Enchaînement du Ninja).
 	effective_damage += caster.pi + caster.chain_pi
+	# Prêtre de la nuit : +1 PI la nuit.
+	if is_night and caster.traits.has("night_pi"):
+		effective_damage += int(caster.traits["night_pi"])
 
 	# Formation (Soldat) : +1 dégât si au moins un allié (hors
 	# soi-même) est sur une case adjacente.
@@ -2890,7 +2978,7 @@ func _resolve_weapon_attack(caster: CombatUnit, spell: Spell, target: CombatUnit
 	var precision_mortelle = caster.equipped_weapon != null and caster.equipped_weapon.weapon_name.begins_with("Dague") \
 		and caster.equipped_metier != null and caster.equipped_metier.grants_assassin_precision_mortelle
 	# Arme céleste fait consulter l'armure MAGIQUE de la cible plutôt que physique.
-	if not concentration_ignores_armor and not precision_mortelle:
+	if not concentration_ignores_armor and not precision_mortelle and not bool(caster.traits.get("ignores_armor", false)):
 		var relevant_armor = target.magic_armor_value if use_magic_armor else target.armor_value
 		effective_damage = max(0, effective_damage - relevant_armor)
 
@@ -2902,8 +2990,16 @@ func _resolve_weapon_attack(caster: CombatUnit, spell: Spell, target: CombatUnit
 		var runes_bonus = max(0, 2 - target.magic_armor_value)
 		effective_damage += runes_bonus
 
+	# Élémentaire / Golem de pierre : les armes tranchantes sont sans effet.
+	if bool(target.traits.get("immune_sharp", false)) and _is_sharp_weapon(caster.equipped_weapon):
+		effective_damage = 0
+		spawn_floating_text(target.position, "Insensible", Color(0.7, 0.7, 0.75))
+
 	target.take_damage(effective_damage, is_critical)
 	spawn_floating_text(target.position, "-%d" % effective_damage, Color(0.95, 0.3, 0.3))
+	_apply_on_hit_traits(caster, target, is_critical)
+	if spell.arrow_used != null and target.current_hp > 0:
+		_apply_arrow_on_hit(spell.arrow_used, target)
 
 	# Enchaînement (Ninja) : +1 PI par attaque qui inflige des dégâts, remis à
 	# 0 sinon.
@@ -2913,7 +3009,7 @@ func _resolve_weapon_attack(caster: CombatUnit, spell: Spell, target: CombatUnit
 		else:
 			caster.chain_pi = 0
 
-	print("%s touche %s avec %s (%d dégâts)." % [caster.unit_name, target.unit_name, spell.spell_name, effective_damage])
+	_log("%s touche %s avec %s (%d dégâts)." % [caster.unit_name, target.unit_name, spell.spell_name, effective_damage])
 
 	# Vol de vie (Gantelets du Berserk) : soigne le lanceur du montant
 	# exact des dégâts infligés.
@@ -2937,6 +3033,7 @@ func _resolve_weapon_attack(caster: CombatUnit, spell: Spell, target: CombatUnit
 func _roll_weapon_bonus_dice(unit: CombatUnit, is_melee: bool) -> int:
 	var total = 0
 	for effect in unit.active_effects:
+		total += effect.bonus_weapon_flat_damage  # Acide, Arme brisée (valeurs négatives).
 		if effect.bonus_weapon_dice_count <= 0:
 			continue
 		if effect.bonus_weapon_dice_ranged_only and is_melee:
@@ -2951,6 +3048,13 @@ func _roll_weapon_bonus_dice(unit: CombatUnit, is_melee: bool) -> int:
 # à `attacker` (toujours "brut", pas de réduction d'armure — c'est une
 # brûlure au contact, pas une attaque physique classique).
 func _apply_melee_reflect(target: CombatUnit, attacker: CombatUnit) -> void:
+	# Brûleur : une chance de foudroyer quiconque le touche au corps à corps.
+	var thunder: Dictionary = target.traits.get("thunder_contact", {})
+	if not thunder.is_empty() and is_instance_valid(attacker) and attacker.current_hp > 0 \
+			and randf() < float(thunder.get("chance", 0.0)):
+		var bolt: int = int(thunder.get("damage", 6))
+		attacker.take_damage(bolt)
+		spawn_floating_text(attacker.position, "-%d (Foudre)" % bolt, Color(0.95, 0.9, 0.3))
 	for effect in target.active_effects:
 		if effect.reflect_dice_terms.is_empty():
 			continue
@@ -2984,7 +3088,7 @@ func _refund_failed_cast(caster: CombatUnit, ea_cost: int) -> void:
 		return
 	caster.current_ea += refund
 	spawn_floating_text(caster.position, "+%d EA (raté)" % refund, Color(0.65, 0.45, 0.95))
-	print("%s récupère %d EA (sort raté, moitié du coût rendue)." % [caster.unit_name, refund])
+	_log("%s récupère %d EA (sort raté, moitié du coût rendue)." % [caster.unit_name, refund])
 
 # Sort à coût « initial (i) » raté : la moitié (arrondie à l'inférieur) de
 # l'EA MAXIMUM perdue est rendue — au maximum, et à l'EA actuelle d'autant.
@@ -2997,7 +3101,7 @@ func _refund_failed_initial_cost(caster: CombatUnit) -> void:
 	caster._recalculate_stats()
 	caster.current_ea = mini(caster.current_ea + refund, caster.max_ea)
 	spawn_floating_text(caster.position, "+%d EA max (raté)" % refund, Color(0.75, 0.25, 0.55))
-	print("%s récupère %d EA maximum (sort à coût initial raté)." % [caster.unit_name, refund])
+	_log("%s récupère %d EA maximum (sort à coût initial raté)." % [caster.unit_name, refund])
 
 func _resolve_spell_effect(caster: CombatUnit, spell: Spell, targets: Array) -> void:
 	if targets.is_empty():
@@ -3027,8 +3131,11 @@ func _resolve_spell_effect(caster: CombatUnit, spell: Spell, targets: Array) -> 
 	avg_stat -= malus
 
 	var cast_roll = randi_range(1, 20)
+	if spell.spell_type == Spell.SpellType.NONE:
+		cast_roll = 0  # Aucun test : toujours réussi. (cast_roll < avg_stat tant que avg_stat > 0)
+		avg_stat = 99.0
 	if cast_roll >= avg_stat:
-		print("%s rate son sort %s (jet %d >= moyenne %.1f, malus -%d)." % [caster.unit_name, spell.spell_name, cast_roll, avg_stat, malus])
+		_log("%s rate son sort %s (jet %d >= moyenne %.1f, malus -%d)." % [caster.unit_name, spell.spell_name, cast_roll, avg_stat, malus])
 		spawn_floating_text(targets[0].position, "Raté", Color(0.65, 0.65, 0.65))
 		if spell.is_initial_cost:
 			_refund_failed_initial_cost(caster)
@@ -3042,7 +3149,7 @@ func _resolve_spell_effect(caster: CombatUnit, spell: Spell, targets: Array) -> 
 	var is_critical = cast_roll == 1
 	if is_critical:
 		spawn_floating_text(targets[0].position, "Critique !", Color(1.0, 0.85, 0.2))
-		print("%s réalise un coup critique avec %s !" % [caster.unit_name, spell.spell_name])
+		_log("%s réalise un coup critique avec %s !" % [caster.unit_name, spell.spell_name])
 
 	for target in targets:
 		_apply_spell_effect_to_target(caster, spell, target, is_critical)
@@ -3052,7 +3159,18 @@ func _resolve_spell_effect(caster: CombatUnit, spell: Spell, targets: Array) -> 
 # _resolve_spell_effect pour être appelable une fois par cible d'un
 # sort de zone/groupe. `is_critical` (jet = 1) double les dégâts/soins
 # SEULEMENT — jamais les effets à durée/buffs/invocations.
-func _apply_spell_effect_to_target(caster: CombatUnit, spell: Spell, target: CombatUnit, is_critical: bool = false) -> void:
+func _apply_spell_effect_to_target(caster: CombatUnit, spell: Spell, target: CombatUnit, is_critical: bool = false, reflected: bool = false) -> void:
+	# Sphinx, Dragonne des cimes : immunisés aux attaques magiques. Golem de
+	# cristal : une chance de renvoyer le sort sur son lanceur (une seule fois).
+	if not reflected and is_instance_valid(caster) and target.team != caster.team and not spell.is_heal:
+		if bool(target.traits.get("immune_magic", false)):
+			spawn_floating_text(target.position, "Immunisé (magie)", Color(0.75, 0.75, 0.85))
+			return
+		var reflect_chance: float = float(target.traits.get("reflect_magic", 0.0))
+		if reflect_chance > 0.0 and randf() < reflect_chance:
+			spawn_floating_text(target.position, "Sort renvoyé !", Color(0.6, 0.9, 1.0))
+			_apply_spell_effect_to_target(target, spell, caster, is_critical, true)
+			return
 	# Purge : retire tous les effets à durée actifs de la cible (buffs
 	# ET debuffs — le catalogue ne distingue pas). Une action à part,
 	# elle ne se combine pas avec un dégât/soin dans le même sort.
@@ -3070,7 +3188,7 @@ func _apply_spell_effect_to_target(caster: CombatUnit, spell: Spell, target: Com
 			return
 		target.infection_stacks += 1
 		spawn_floating_text(target.position, "Infection (%d)" % target.infection_stacks, Color(0.5, 0.7, 0.3))
-		print("%s infecte %s (%d charge(s))." % [caster.unit_name, target.unit_name, target.infection_stacks])
+		_log("%s infecte %s (%d charge(s))." % [caster.unit_name, target.unit_name, target.infection_stacks])
 		return
 
 	# Nécrose (Prêtre) : déclenche TOUTES les charges d'Infection de la
@@ -3078,19 +3196,26 @@ func _apply_spell_effect_to_target(caster: CombatUnit, spell: Spell, target: Com
 	if spell.triggers_infections:
 		var stacks = target.infection_stacks
 		if stacks <= 0:
-			spawn_floating_text(target.position, "Aucune infection", Color(0.65, 0.65, 0.65))
-			return
+			if spell.target_mode != Spell.TargetMode.ALL_ENEMIES:
+				spawn_floating_text(target.position, "Aucune infection", Color(0.65, 0.65, 0.65))
+			return  # Zone : les ennemis sans infection sont simplement ignorés.
 		target.infection_stacks = 0
 		var necrose_damage = stacks * 4
 		target.take_damage(necrose_damage)
 		spawn_floating_text(target.position, "-%d (Nécrose)" % necrose_damage, Color(0.45, 0.65, 0.25))
-		print("%s déclenche %d charge(s) d'Infection sur %s (%d dégâts bruts)." % [caster.unit_name, stacks, target.unit_name, necrose_damage])
+		_log("%s déclenche %d charge(s) d'Infection sur %s (%d dégâts bruts)." % [caster.unit_name, stacks, target.unit_name, necrose_damage])
 		return
 
 	# A-t-il un vrai dégât/soin, ou est-ce un buff/debuff pur (ex: juste
 	# +2 Adresse, sans aucun dégât) ? Un sort sans dice_terms ET sans
 	# `damage` fixe ET qui n'est pas marqué soin n'a rien à infliger.
-	var has_damage_component = spell.is_heal or not spell.dice_terms.is_empty() or spell.damage != 0
+	# Buff pur ciblant allié/soi/groupe : le `damage` par défaut (15) du
+	# Spell n'a jamais été voulu, on l'ignore (sinon Subito, runes, etc.
+	# blessaient leurs bénéficiaires).
+	var default_dmg_buff = spell.damage == 15 and spell.dice_terms.is_empty() and not spell.is_heal \
+			and spell.effect_to_apply != null \
+			and spell.target_mode in [Spell.TargetMode.SINGLE_ALLY, Spell.TargetMode.SELF, Spell.TargetMode.GROUP]
+	var has_damage_component = spell.is_heal or not spell.dice_terms.is_empty() or (spell.damage != 0 and not default_dmg_buff)
 
 	# Esquivable seulement si c'est hostile (cible d'un autre camp,
 	# effet non-soin) — un soin ou un buff sur un allié ne s'esquive
@@ -3144,7 +3269,7 @@ func _apply_spell_effect_to_target(caster: CombatUnit, spell: Spell, target: Com
 		if spell.is_heal and spell.restores_mana:
 			target.current_ea = min(target.current_ea + rolled, target.max_ea)
 			spawn_floating_text(target.position, "+%d EA" % rolled, Color(0.55, 0.75, 0.95))
-			print("%s restaure %d EA à %s avec %s." % [caster.unit_name, rolled, target.unit_name, spell.spell_name])
+			_log("%s restaure %d EA à %s avec %s." % [caster.unit_name, rolled, target.unit_name, spell.spell_name])
 			return
 
 		var effective_damage = -rolled if spell.is_heal else rolled
@@ -3173,7 +3298,7 @@ func _apply_spell_effect_to_target(caster: CombatUnit, spell: Spell, target: Com
 		else:
 			spawn_floating_text(target.position, "+%d" % abs(effective_damage), Color(0.35, 0.9, 0.5))
 
-		print("%s touche %s avec %s (%d dégâts)." % [caster.unit_name, target.unit_name, spell.spell_name, effective_damage])
+		_log("%s touche %s avec %s (%d dégâts)." % [caster.unit_name, target.unit_name, spell.spell_name, effective_damage])
 
 		# Croissant de lune (Prêtre) : les PV retirés sont transférés en
 		# soin au lanceur (simplification : la donnée d'origine laisse
@@ -3183,7 +3308,7 @@ func _apply_spell_effect_to_target(caster: CombatUnit, spell: Spell, target: Com
 			var healed = min(effective_damage, caster.max_hp - caster.current_hp)
 			caster.current_hp += healed
 			spawn_floating_text(caster.position, "+%d" % healed, Color(0.35, 0.9, 0.5))
-			print("%s transfère %d PV depuis %s." % [caster.unit_name, healed, target.unit_name])
+			_log("%s transfère %d PV depuis %s." % [caster.unit_name, healed, target.unit_name])
 
 		# Lancer un sort à distance 1 (corps à corps) est risqué pour le
 		# lanceur : il subit 1/3 des dégâts infligés, en retour.
@@ -3192,7 +3317,7 @@ func _apply_spell_effect_to_target(caster: CombatUnit, spell: Spell, target: Com
 			if backlash > 0:
 				caster.take_damage(backlash)
 				spawn_floating_text(caster.position, "-%d (recul)" % backlash, Color(0.85, 0.5, 0.2))
-				print("%s subit %d dégâts de recul (sort lancé au corps à corps)." % [caster.unit_name, backlash])
+				_log("%s subit %d dégâts de recul (sort lancé au corps à corps)." % [caster.unit_name, backlash])
 	elif is_offensive and not spell.unavoidable and _try_dodge(target, caster, is_critical):
 		return  # Debuff pur (sans dégâts) sur un ennemi : esquivable aussi.
 
@@ -3254,6 +3379,180 @@ func _apply_spell_effect_to_target(caster: CombatUnit, spell: Spell, target: Com
 
 		spawn_floating_text(target.position, spell.conjured_weapon_name, Color(0.85, 0.75, 0.2))
 
+# ---------------------------------------------------------------------------
+# Traits spéciaux des ennemis de la Tour (voir CombatUnit.traits / TowerPoc).
+# ---------------------------------------------------------------------------
+
+# Armes « tranchantes » (Élémentaire et Golem de pierre n'y sont pas sensibles) :
+# détectées par le nom, comme le javelot ou la dague ailleurs dans ce fichier.
+func _is_sharp_weapon(weapon: Weapon) -> bool:
+	if weapon == null:
+		return false
+	for prefix in ["Epée", "Épée", "Dague", "Hache", "Lance", "Javelot", "Sabre", "Katana", "Rapière", "Cimeterre", "Couteau", "Glaive"]:
+		if weapon.weapon_name.begins_with(prefix):
+			return true
+	return false
+
+# Regard de la Gorgone : -5 AT/PRD/AD pour l'attaquant jusqu'à son prochain tour
+# (ne se cumule pas, se rafraîchit à chaque attaque contre elle).
+func _apply_gorgon_gaze(attacker: CombatUnit) -> void:
+	for effect in attacker.active_effects:
+		if effect.effect_name == "Regard de la Gorgone":
+			effect.duration_remaining = 1
+			return
+	var gaze := StatusEffect.new()
+	gaze.effect_name = "Regard de la Gorgone"
+	gaze.duration_remaining = 1
+	gaze.bonus_attaque = -5
+	gaze.bonus_parade = -5
+	gaze.bonus_adresse = -5
+	attacker.add_status_effect(gaze)
+	spawn_floating_text(attacker.position, "Regard de la Gorgone (-5)", Color(0.6, 0.75, 0.4))
+
+# Mahaha : une chance que la parade casse l'arme du parant (plus aucun dégât
+# d'arme pour le reste du combat).
+func _try_weapon_break(attacker: CombatUnit, defender: CombatUnit) -> void:
+	var chance: float = float(attacker.traits.get("weapon_break", 0.0))
+	if chance <= 0.0 or randf() >= chance:
+		return
+	var broken := StatusEffect.new()
+	broken.effect_name = "Arme brisée"
+	broken.duration_remaining = -1
+	broken.bonus_weapon_flat_damage = -999
+	defender.add_status_effect(broken)
+	spawn_floating_text(defender.position, "Arme brisée !", Color(0.85, 0.4, 0.3))
+
+# Effets déclenchés quand l'attaque d'arme d'un ennemi TOUCHE : paralysie,
+# assaut raté, perte de stats, poison, acide.
+func _apply_on_hit_traits(caster: CombatUnit, target: CombatUnit, is_critical: bool) -> void:
+	if caster.traits.is_empty() or not is_instance_valid(target) or target.current_hp <= 0:
+		return
+
+	# Griffe paralysante (Goule) : test de Force, sinon des tours perdus.
+	var paralyze: Dictionary = caster.traits.get("paralyze", {})
+	if not paralyze.is_empty() and randf() < float(paralyze.get("chance", 1.0)):
+		if randi_range(1, 20) >= target.force_stat:
+			target.stunned_turns_remaining += int(paralyze.get("turns", 1))
+			spawn_floating_text(target.position, "Paralysé !", Color(0.9, 0.9, 0.3))
+		else:
+			spawn_floating_text(target.position, "Résiste (Force)", Color(0.7, 0.9, 0.7))
+
+	# Yukionna : une chance de faire rater le prochain assaut.
+	var miss_chance: float = float(caster.traits.get("miss_next_attack", 0.0))
+	if miss_chance > 0.0 and randf() < miss_chance and not target.next_attack_misses:
+		target.next_attack_misses = true
+		spawn_floating_text(target.position, "Prochain assaut raté", Color(0.55, 0.8, 0.95))
+
+	# Gorgone : -N à toutes les stats par attaque réussie, cumulable (max).
+	var drain: Dictionary = caster.traits.get("stat_drain", {})
+	if not drain.is_empty():
+		var drain_name: String = str(drain.get("name", "Pétrification"))
+		var drain_max: int = int(drain.get("max", 3))
+		var stacks := 0
+		for effect in target.active_effects:
+			if effect.effect_name == drain_name:
+				stacks += 1
+		if stacks < drain_max:
+			var amount: int = int(drain.get("amount", 1))
+			var petrify := StatusEffect.new()
+			petrify.effect_name = drain_name
+			petrify.duration_remaining = -1
+			petrify.bonus_attaque = -amount
+			petrify.bonus_parade = -amount
+			petrify.bonus_adresse = -amount
+			petrify.bonus_force = -amount
+			petrify.bonus_intelligence = -amount
+			petrify.bonus_charisme = -amount
+			petrify.bonus_courage = -amount
+			petrify.bonus_chance = -amount
+			target.add_status_effect(petrify)
+			spawn_floating_text(target.position, "%s (%d/%d)" % [drain_name, stacks + 1, drain_max], Color(0.6, 0.65, 0.55))
+
+	# Poison (Araignée, Tizheruk, Singe géant, Boiuna...) : malus de stats et/ou
+	# dégâts par tour, avec cumul optionnel.
+	var poison: Dictionary = caster.traits.get("poison", {})
+	if not poison.is_empty() and randf() < float(poison.get("chance", 1.0)):
+		var poison_name: String = str(poison.get("name", "Poison"))
+		if not bool(poison.get("stack", false)):
+			for old in target.active_effects.duplicate():
+				if old.effect_name == poison_name:
+					target.active_effects.erase(old)
+		var venom := StatusEffect.new()
+		venom.effect_name = poison_name
+		venom.is_poison = true
+		venom.duration_remaining = int(poison.get("duration", -1))
+		venom.bonus_attaque = -int(poison.get("at", 0))
+		venom.bonus_parade = -int(poison.get("prd", 0))
+		venom.bonus_force = -int(poison.get("fo", 0))
+		venom.tick_dice_count = int(poison.get("dice", 0))
+		venom.damage_per_tick = int(poison.get("dot", 0))
+		if target.add_status_effect(venom):
+			spawn_floating_text(target.position, "Empoisonné", Color(0.5, 0.8, 0.3))
+		else:
+			spawn_floating_text(target.position, "Résiste au poison", Color(0.7, 0.9, 0.7))
+
+	# Acide (Ver-dragon) : sur coup critique, les dégâts de l'arme de la cible
+	# baissent pour le reste du combat (cumulable).
+	var acid: int = int(caster.traits.get("acid", 0))
+	if acid > 0 and is_critical:
+		var corrosion := StatusEffect.new()
+		corrosion.effect_name = "Acide"
+		corrosion.duration_remaining = -1
+		corrosion.bonus_weapon_flat_damage = -acid
+		target.add_status_effect(corrosion)
+		spawn_floating_text(target.position, "Acide : arme -%d" % acid, Color(0.7, 0.9, 0.2))
+
+# Traits déclenchés au DÉBUT du tour de l'ennemi (appelé par TurnManager) :
+# liane de zone (Ent d'yggdrasil) et invocation d'un allié (Chaman, Tigre alpha).
+func process_turn_start_traits(unit: CombatUnit) -> void:
+	if unit == null or not is_instance_valid(unit) or unit.traits.is_empty() or unit.team == CombatUnit.Team.PLAYER:
+		return
+
+	# Liane : dégâts bruts à tous les adversaires dans un rayon.
+	var vine: Dictionary = unit.traits.get("turn_aoe", {})
+	if not vine.is_empty():
+		for victim in _get_units_in_radius(unit.hex_coord, int(vine.get("radius", 3))):
+			if not is_instance_valid(victim) or victim.team == unit.team or victim.current_hp <= 0:
+				continue
+			var total: int = int(vine.get("mod", 0))
+			for i in range(int(vine.get("dice", 1))):
+				total += randi_range(1, 6)
+			victim.take_damage(total)
+			spawn_floating_text(victim.position, "-%d (%s)" % [total, str(vine.get("name", "Liane"))], Color(0.35, 0.75, 0.3))
+
+	# Invocation : une chance par tour, limitée en nombre total.
+	var summon: Dictionary = unit.traits.get("summon", {})
+	if not summon.is_empty() and randf() < float(summon.get("chance", 0.0)):
+		var made: int = int(unit.get_meta("summons_made", 0))
+		if made < int(summon.get("max", 2)):
+			var count: int = 1
+			if int(summon.get("count_dice", 0)) > 0:
+				count = randi_range(1, int(summon["count_dice"]))
+			for n in range(count):
+				if _summon_enemy_next_to(unit, str(summon.get("template", ""))):
+					made += 1
+			unit.set_meta("summons_made", made)
+
+# Pose un allié (gabarit de la Tour) sur une case libre adjacente de `unit`.
+func _summon_enemy_next_to(unit: CombatUnit, template_name: String) -> bool:
+	if template_name == "" or UnitDatabase._find_template(template_name).is_empty():
+		return false
+	for direction in range(6):
+		var cell: Vector2i = hex_neighbor(unit.hex_coord, direction)
+		if not _cells.has(cell) or is_occupied(cell):
+			continue
+		var ally: CombatUnit = _build_tower_enemy(template_name, TowerManager.current_floor)
+		ally.is_summoned = true
+		ally.set_meta("tower_xp", 0)  # Un renfort invoqué ne donne pas d'XP.
+		if not place_unit_at(ally, cell):
+			ally.queue_free()
+			continue
+		if _turn_manager != null:
+			_turn_manager.add_unit_to_turn_order(ally, unit)
+		spawn_floating_text(ally.position, "Renfort !", Color(0.6, 0.9, 1.0))
+		return true
+	return false
+
 # Tente une esquive pour le défenseur s'il est en posture Esquive et
 # que sa disponibilité d'esquive n'est pas déjà consommée ce tour-ci
 # (règle "1 attaque sur 2"). Renvoie true si l'attaque est esquivée.
@@ -3287,6 +3586,7 @@ func _try_dodge(target: CombatUnit, attacker: CombatUnit, attack_is_critical: bo
 	var dodge_success = dodge_roll == 1 if attack_is_critical else dodge_roll < target.adresse_stat
 	if dodge_success:
 		spawn_floating_text(target.position, "Esquivé !", Color(0.4, 0.8, 1.0))
+		_log("%s esquive l'attaque de %s." % [target.unit_name, attacker.unit_name])
 
 		# Contre-attaque après esquive (Elfe Noir : sans restriction ;
 		# Homme des sables : seulement au corps à corps, voir
@@ -3406,6 +3706,7 @@ func get_graveyard_for_team(team: int) -> Array:
 	return _graveyard.filter(func(u): return is_instance_valid(u) and u.team == team)
 
 func _on_unit_died(unit: CombatUnit) -> void:
+	_log("✝ %s est mort." % unit.unit_name)
 	if _cells.has(unit.hex_coord) and _cells[unit.hex_coord]["occupant"] == unit:
 		_cells[unit.hex_coord]["occupant"] = null
 
@@ -3649,12 +3950,28 @@ func move_unit(unit: CombatUnit, target_coord: Vector2i) -> bool:
 		if not is_instance_valid(unit) or unit.current_hp <= 0:
 			return false
 
+	# Pièges : le déplacement s'arrête sur le premier piège à contact (invisible
+	# ou non) rencontré sur le chemin.
+	var dest: Vector2i = target_coord
+	var from_cell: Vector2i = unit.hex_coord
+	var prev_cell: Vector2i = unit.hex_coord
+	for c in _find_move_path(unit.hex_coord, target_coord):
+		var step_trap: Variant = _trap_at(c)
+		if step_trap != null and step_trap["def"].trigger == TrapDef.Trigger.STEP and _trap_affects(step_trap, unit):
+			dest = c
+			from_cell = prev_cell
+			break
+		prev_cell = c
+	if dest == target_coord:
+		from_cell = prev_cell
+
 	_cells[unit.hex_coord]["occupant"] = null
-	unit.hex_coord = target_coord
-	unit.move_to_pixel(axial_to_pixel(target_coord))
-	_cells[target_coord]["occupant"] = unit
+	unit.hex_coord = dest
+	unit.move_to_pixel(axial_to_pixel(dest))
+	_cells[dest]["occupant"] = unit
 
 	_refresh_tanker_auras()
+	_resolve_traps_after_move(unit, from_cell)
 
 	return true
 
@@ -3723,8 +4040,13 @@ func _build_tower_unit(index: int) -> CombatUnit:
 	unit.unit_name = character.character_name
 
 	# Ce que build_unit() venait de poser d'après le Barbare : on le remplace.
-	unit.base_max_hp = TowerManager.ADVENTURER_BASE_HP
-	unit.base_max_ea = TowerManager.ADVENTURER_BASE_EA
+	# PV/EA : initial de la race (ou du métier), bonus de métiers et gains par
+	# niveau (voir TowerManager.get_hp_ea_progression) — la race et le métier ne
+	# les ajoutent plus une seconde fois (progression_managed).
+	var progression: Dictionary = TowerManager.get_hp_ea_progression(index)
+	unit.base_max_hp = int(progression["hp"])
+	unit.base_max_ea = int(progression["ea"])
+	unit.progression_managed = true
 	unit.base_max_pm = TowerManager.ADVENTURER_BASE_PM
 	unit.base_attack_stat = TowerManager.ADVENTURER_BASE_ATTACK
 	unit.base_parade_stat = TowerManager.ADVENTURER_BASE_PARADE
@@ -3734,6 +4056,8 @@ func _build_tower_unit(index: int) -> CombatUnit:
 	unit.inventory_arrows = []
 	unit.inventory_potions = []
 	unit.inventory_weapons = []
+	for spare in TowerManager.team[index].spare_weapons:  # Armes de réserve achetées à la création.
+		unit.inventory_weapons.append(spare.duplicate())
 
 	unit.base_courage = TowerManager.get_stat_value(index, "courage")
 	unit.base_intelligence_stat = TowerManager.get_stat_value(index, "intelligence")
@@ -3792,6 +4116,7 @@ func _build_tower_enemy(template_name: String, floor_number: int) -> CombatUnit:
 		for set_spell in TowerPoc.build_spell_set(str(set_id)):
 			unit.spells.append(set_spell)
 	unit.set_meta("tower_xp", int(template.get("xp", 0)))
+	unit.traits = Dictionary(template.get("traits", {})).duplicate(true)
 
 	# Armure naturelle : un ennemi n'a pas d'armure à acheter, juste un total de PR.
 	var natural_armor: int = int(template.get("armor", 0))
@@ -3964,6 +4289,8 @@ func _draw() -> void:
 
 		_draw_hexagon(center, fill)
 
+	_draw_traps()
+
 # Dessine un hexagone rempli + son contour à une position donnée.
 func _draw_hexagon(center: Vector2, fill: Color) -> void:
 	var points = PackedVector2Array()
@@ -3984,3 +4311,513 @@ func _draw_hexagon(center: Vector2, fill: Color) -> void:
 	var outline = points.duplicate()
 	outline.append(points[0])
 	draw_polyline(outline, line_color, 1.5, true)
+
+
+# ============================================================
+# PIÈGES (voir TrapDef / TrapDatabase)
+# Un piège posé est un Dictionary :
+#   def (TrapDef), coord, team (équipe du poseur), owner (CombatUnit),
+#   revealed_teams (équipes qui l'ont détecté en plus du poseur),
+#   armed (bool), victim + effect (effet à durée posé après déclenchement).
+# Visible pour l'équipe du poseur et pour celles qui l'ont détecté.
+# ============================================================
+
+var _traps: Array = []
+
+func _prune_traps() -> void:
+	_traps = _traps.filter(func(t):
+		if t["armed"] or int(t.get("zone_turns", 0)) > 0:
+			return true
+		for v in t.get("victims", []):
+			var u = v["unit"]
+			if is_instance_valid(u) and u.current_hp > 0 and u.active_effects.has(v["effect"]):
+				return true
+		return false
+	)
+
+func _trap_at(coord: Vector2i) -> Variant:
+	for t in _traps:
+		if t["armed"] and t["coord"] == coord:
+			return t
+	return null
+
+func _trap_known_to_team(trap: Dictionary, team: int) -> bool:
+	return trap["team"] == team or trap["revealed_teams"].has(team)
+
+func _trap_affects(trap: Dictionary, unit: CombatUnit) -> bool:
+	if unit == null or not is_instance_valid(unit) or unit.current_hp <= 0:
+		return false
+	match trap["def"].affects:
+		TrapDef.Affects.ENEMY, TrapDef.Affects.ZONE:
+			return unit.team != trap["team"]
+		TrapDef.Affects.GROUP:
+			return unit.team == trap["team"]
+	return true
+
+func _find_move_path(start: Vector2i, goal: Vector2i) -> Array:
+	if start == goal:
+		return []
+	var prev: Dictionary = {start: start}
+	var queue: Array = [start]
+	var found := false
+	while not queue.is_empty() and not found:
+		var cur: Vector2i = queue.pop_front()
+		for dir in DIRECTIONS:
+			var n: Vector2i = cur + dir
+			if prev.has(n) or not _cells.has(n) or not _cells[n]["is_walkable"]:
+				continue
+			if n != goal and _cells[n]["occupant"] != null:
+				continue
+			prev[n] = cur
+			if n == goal:
+				found = true
+				break
+			queue.append(n)
+	if not found:
+		return [goal]
+	var path: Array = []
+	var c: Vector2i = goal
+	while c != start:
+		path.push_front(c)
+		c = prev[c]
+	return path
+
+func _in_trap_line(trap: Dictionary, coord: Vector2i) -> bool:
+	var rng: int = trap["def"].trigger_range
+	for dir in DIRECTIONS:
+		for k in range(1, rng + 1):
+			var c: Vector2i = trap["coord"] + dir * k
+			if not _cells.has(c) or not _cells[c]["is_walkable"]:
+				break
+			if c == coord:
+				return true
+	return false
+
+# Après un déplacement : piège à contact sur la case d'arrivée, puis pièges
+# de proximité dont la ligne droite passe par l'unité.
+func _resolve_traps_after_move(unit: CombatUnit, from_coord: Vector2i = Vector2i.ZERO) -> void:
+	if _traps.is_empty():
+		return
+	var here: Variant = _trap_at(unit.hex_coord)
+	if here != null and here["def"].trigger == TrapDef.Trigger.STEP and _trap_affects(here, unit):
+		_trigger_trap(here, unit, from_coord)
+	for t in _traps.duplicate():
+		if unit == null or not is_instance_valid(unit) or unit.current_hp <= 0:
+			break
+		if t["armed"] and t["def"].trigger == TrapDef.Trigger.PROXIMITY_LINE \
+				and _trap_affects(t, unit) and _in_trap_line(t, unit.hex_coord):
+			_trigger_trap(t, unit, from_coord)
+	_prune_traps()
+	queue_redraw()
+
+func _trap_zone_cells(trap: Dictionary) -> Array:
+	var cells: Array = [trap["coord"]]
+	for dir in DIRECTIONS:
+		var c: Vector2i = trap["coord"] + dir
+		if _cells.has(c):
+			cells.append(c)
+	return cells
+
+func _trigger_trap(trap: Dictionary, victim: CombatUnit, from_coord: Vector2i = Vector2i.ZERO) -> void:
+	var def: TrapDef = trap["def"]
+	# Chasseur de trésor (« Pas cette fois ») : test de Chance pour éviter le piège ;
+	# le piège est alors révélé à son équipe mais reste armé.
+	if victim.has_metier("Chasseur de trésor") and randi_range(1, 20) < victim.chance_stat:
+		spawn_floating_text(victim.position, "Pas cette fois !", Color(0.6, 0.9, 0.6))
+		if not trap["revealed_teams"].has(victim.team):
+			trap["revealed_teams"].append(victim.team)
+		return
+
+	trap["armed"] = false
+	spawn_floating_text(axial_to_pixel(trap["coord"]), "Piège : %s !" % def.trap_name, Color(0.95, 0.6, 0.2))
+	_log("%s déclenche %s." % [victim.unit_name, def.trap_name])
+
+	var targets: Array = [victim]
+	if def.affects == TrapDef.Affects.ZONE:
+		targets = _get_units_in_cells(_trap_zone_cells(trap))
+	if def.persistent_zone and def.duration > 0:
+		trap["zone_turns"] = def.duration
+
+	# Direction de repoussement : à l'opposé du sens d'arrivée sur le piège.
+	var push_dir: Vector2i = Vector2i.ZERO
+	if from_coord != trap["coord"] and from_coord != Vector2i.ZERO:
+		push_dir = DIRECTIONS[_nearest_hex_direction(from_coord - trap["coord"])]
+
+	for target in targets:
+		if not is_instance_valid(target) or target.current_hp <= 0:
+			continue
+		_apply_trap_to(trap, target, push_dir if target == victim else Vector2i.ZERO)
+	_prune_traps()
+	queue_redraw()
+
+func _apply_trap_to(trap: Dictionary, target: CombatUnit, push_dir: Vector2i) -> void:
+	var def: TrapDef = trap["def"]
+	if def.has_damage():
+		var total: int = _roll_trap_damage(def, target)
+		target.take_damage(total)
+		spawn_floating_text(target.position + Vector2(0, -18), "-%d" % total, Color(0.9, 0.25, 0.2))
+		if not is_instance_valid(target) or target.current_hp <= 0:
+			return
+	if def.effect == null:
+		return
+	var e: StatusEffect = def.effect.duplicate()
+	if e.move > 0:
+		# Repoussé : déplacement instantané, pas d'effet qui dure.
+		_push_unit(target, push_dir, e.move)
+		return
+	var turns: int = def.duration if def.duration > 0 else e.weaken
+	e.duration_remaining = turns if turns > 0 else -1
+	if is_instance_valid(trap["owner"]):
+		e.source_ref = trap["owner"]
+	e.set_meta("trap", trap)
+	if target.add_status_effect(e):
+		if not trap.has("victims"):
+			trap["victims"] = []
+		trap["victims"].append({"unit": target, "effect": e})
+		spawn_floating_text(target.position + Vector2(0, -34), e.effect_name, Color(0.7, 0.6, 0.95))
+
+func _roll_trap_damage(def: TrapDef, target: CombatUnit) -> int:
+	var total: int = def.damage_modifier
+	for i in range(def.damage_dice):
+		total += randi_range(1, 6)
+	if target.has_skill("TDP"):  # Tomber dans les pièges : +1D de dégâts.
+		total += randi_range(1, 6)
+	return total
+
+# Repousse `unit` de `cells` cases dans la direction `dir` ; s'arrête devant un
+# obstacle, une unité ou le bord. Ne déclenche pas d'autre piège en chemin.
+func _push_unit(unit: CombatUnit, dir: Vector2i, cells: int) -> void:
+	if dir == Vector2i.ZERO:
+		return
+	var dest: Vector2i = unit.hex_coord
+	for i in range(cells):
+		var n: Vector2i = dest + dir
+		if not _cells.has(n) or not _cells[n]["is_walkable"] or _cells[n]["occupant"] != null:
+			break
+		dest = n
+	if dest == unit.hex_coord:
+		spawn_floating_text(unit.position, "Repoussé (bloqué)", Color(0.8, 0.8, 0.8))
+		return
+	_cells[unit.hex_coord]["occupant"] = null
+	unit.hex_coord = dest
+	unit.move_to_pixel(axial_to_pixel(dest))
+	_cells[dest]["occupant"] = unit
+	spawn_floating_text(unit.position, "Repoussé !", Color(0.7, 0.6, 0.95))
+
+func process_trap_release(unit: CombatUnit) -> void:
+	if unit == null or not is_instance_valid(unit):
+		return
+	# Zones persistantes (incendiaire) : dégâts à qui commence son tour dedans ;
+	# la durée décompte aux tours du poseur.
+	for t in _traps.duplicate():
+		if int(t.get("zone_turns", 0)) <= 0:
+			continue
+		if _trap_zone_cells(t).has(unit.hex_coord):
+			var dmg: int = _roll_trap_damage(t["def"], unit)
+			unit.take_damage(dmg)
+			spawn_floating_text(unit.position, "-%d (%s)" % [dmg, t["def"].trap_name], Color(0.95, 0.45, 0.15))
+			if not is_instance_valid(unit) or unit.current_hp <= 0:
+				_prune_traps()
+				return
+		var owner_turn: bool = unit == t["owner"]
+		if not is_instance_valid(t["owner"]):
+			# Piège sans poseur (piège de décor) : décompte au tour de la première unité vivante de son camp.
+			var first = null
+			for u2 in _all_units:
+				if is_instance_valid(u2) and u2.team == t["team"] and u2.current_hp > 0:
+					first = u2
+					break
+			owner_turn = unit == first
+		if owner_turn:
+			t["zone_turns"] = int(t["zone_turns"]) - 1
+	_prune_traps()
+	for e in unit.active_effects.duplicate():
+		if not e.has_meta("trap"):
+			continue
+		var def: TrapDef = e.get_meta("trap")["def"]
+		if def.release_test == TrapDef.ReleaseTest.NONE:
+			continue
+		var stat: int = _release_stat(unit, def.release_test)
+		var roll: int = randi_range(1, 20)
+		if roll < stat:
+			unit.remove_status_effect(e)
+			spawn_floating_text(unit.position, "Se libère !", Color(0.5, 0.9, 0.5))
+			_log("%s se libère de %s (test de %s : %d < %d)." % [unit.unit_name, def.trap_name, def.release_stat_name(), roll, stat])
+		else:
+			_log("%s échoue à se libérer de %s (%d >= %d)." % [unit.unit_name, def.trap_name, roll, stat])
+	_prune_traps()
+
+func _release_stat(unit: CombatUnit, test: int) -> int:
+	match test:
+		TrapDef.ReleaseTest.FORCE: return unit.force_stat
+		TrapDef.ReleaseTest.ADRESSE: return unit.adresse_stat
+		TrapDef.ReleaseTest.INTELLIGENCE: return unit.intelligence_stat
+		TrapDef.ReleaseTest.COURAGE: return unit.courage
+		TrapDef.ReleaseTest.CHANCE: return unit.chance_stat
+		TrapDef.ReleaseTest.CHARISME: return unit.charisme_stat
+	return 0
+
+func _finish_cell_spell(caster: CombatUnit, spell: Spell) -> void:
+	caster.record_action_taken(spell)
+	cancel_targeting_mode()
+	if _turn_manager != null:
+		_turn_manager.refresh_ui()
+	queue_redraw()
+
+# Pose d'un piège sur une case libre de la portée (clic refusé = rien consommé).
+func place_trap(caster: CombatUnit, trap_id: String, coord: Vector2i) -> bool:
+	var def: TrapDef = TrapDatabase.build(trap_id)
+	if def == null or int(caster.trap_charges.get(trap_id, 0)) <= 0:
+		return false
+	if not _cells.has(coord) or not _cells[coord]["is_walkable"] or is_occupied(coord) or _trap_at(coord) != null:
+		return false
+	caster.trap_charges[trap_id] = int(caster.trap_charges[trap_id]) - 1
+	_traps.append({"def": def, "coord": coord, "team": caster.team, "owner": caster,
+			"revealed_teams": [], "armed": true, "victim": null, "effect": null})
+	spawn_floating_text(axial_to_pixel(coord), "Piège posé", Color(0.95, 0.75, 0.3))
+	_log("%s pose %s (%d restant(s))." % [caster.unit_name, def.trap_name, caster.trap_charges[trap_id]])
+	return true
+
+func _cast_trap_spell(caster: CombatUnit, spell: Spell, coord: Vector2i) -> void:
+	if not place_trap(caster, spell.trap_id, coord):
+		return  # Case invalide ou plus de charge : rien n'est consommé.
+	_finish_cell_spell(caster, spell)
+
+# Désamorcer : un piège connu de l'équipe du lanceur sur la case ciblée, OU la
+# victime d'un piège déclenché qui s'y trouve. Test d'Adresse ; l'effet à durée
+# s'arrête immédiatement.
+func _cast_disarm(caster: CombatUnit, spell: Spell, coord: Vector2i) -> void:
+	_prune_traps()
+	var armed: Variant = _trap_at(coord)
+	if armed != null and not _trap_known_to_team(armed, caster.team):
+		armed = null
+	var zone_trap: Variant = null
+	for zt in _traps:
+		if int(zt.get("zone_turns", 0)) > 0 and _trap_zone_cells(zt).has(coord):
+			zone_trap = zt
+			break
+	var victim_effects: Array = []
+	var occupant = _cells[coord]["occupant"] if _cells.has(coord) else null
+	if occupant != null:
+		for e in occupant.active_effects:
+			if e.has_meta("trap"):
+				victim_effects.append(e)
+	if armed == null and zone_trap == null and victim_effects.is_empty():
+		return  # Rien à désamorcer ici : clic ignoré.
+
+	var threshold: int = caster.adresse_stat + get_skill_test_bonus(caster)
+	var roll: int = randi_range(1, 20)
+	if roll >= threshold:
+		spawn_floating_text(caster.position, "Désamorçage raté", Color(0.65, 0.65, 0.65))
+		_log("%s rate son désamorçage (jet %d >= %d)." % [caster.unit_name, roll, threshold])
+	else:
+		if armed != null:
+			armed["armed"] = false
+			spawn_floating_text(axial_to_pixel(coord), "Piège désamorcé", Color(0.5, 0.9, 0.5))
+			_log("%s désamorce %s." % [caster.unit_name, armed["def"].trap_name])
+		if zone_trap != null:
+			zone_trap["zone_turns"] = 0
+			spawn_floating_text(axial_to_pixel(coord), "Zone désamorcée", Color(0.5, 0.9, 0.5))
+		for e in victim_effects:
+			occupant.remove_status_effect(e)
+			spawn_floating_text(occupant.position, "Libéré !", Color(0.5, 0.9, 0.5))
+		_prune_traps()
+	_finish_cell_spell(caster, spell)
+
+# Détecter : zone de 3 cases de large autour de la case visée (portée 2).
+# Révèle unités invisibles et pièges ; test d'Intelligence+2, 1 charge.
+func _cast_detect_zone(caster: CombatUnit, spell: Spell, coord: Vector2i) -> void:
+	if caster.detect_uses <= 0:
+		_log("%s n'a plus de charge de Détecter ce combat." % caster.unit_name)
+		cancel_targeting_mode()
+		return
+	caster.detect_uses -= 1
+	var roll: int = randi_range(1, 20)
+	var threshold: int = caster.intelligence_stat + 2 + get_skill_test_bonus(caster)
+	if roll >= threshold:
+		spawn_floating_text(caster.position, "Détection ratée", Color(0.65, 0.65, 0.65))
+		_log("%s rate son test de Détecter (jet %d, seuil %d)." % [caster.unit_name, roll, threshold])
+		_finish_cell_spell(caster, spell)
+		return
+	_log("%s réussit son test de Détecter (jet %d, seuil %d), %d charge(s) restante(s)." % [caster.unit_name, roll, threshold, caster.detect_uses])
+	var cells: Array = _get_zone_cells(caster.hex_coord, coord, Spell.new())
+	var found := 0
+	for c in cells:
+		if not _cells.has(c):
+			continue
+		var occ = _cells[c]["occupant"]
+		if occ != null and occ.is_untargetable:
+			occ.active_effects = occ.active_effects.filter(func(e): return not e.grants_untargetable)
+			occ._recalculate_stats()
+			spawn_floating_text(occ.position, "Révélé !", Color(0.9, 0.9, 0.4))
+			found += 1
+		var t: Variant = _trap_at(c)
+		if t != null and not _trap_known_to_team(t, caster.team):
+			t["revealed_teams"].append(caster.team)
+			spawn_floating_text(axial_to_pixel(c), "Piège détecté !", Color(0.95, 0.5, 0.3))
+			found += 1
+	if found == 0:
+		spawn_floating_text(axial_to_pixel(coord), "Rien détecté", Color(0.7, 0.7, 0.7))
+	_finish_cell_spell(caster, spell)
+
+func _draw_traps() -> void:
+	for t in _traps:
+		if int(t.get("zone_turns", 0)) > 0:
+			for zc in _trap_zone_cells(t):
+				var zp := PackedVector2Array()
+				var zcenter: Vector2 = axial_to_pixel(zc)
+				for i in range(6):
+					var ang: float = deg_to_rad(60.0 * i - 90.0)
+					zp.append(Vector2(zcenter.x + hex_size * cos(ang), zcenter.y + hex_size * sin(ang) * iso_squash))
+				draw_colored_polygon(zp, Color(0.95, 0.4, 0.1, 0.35))
+	for t in _traps:
+		if not t["armed"] or not _trap_known_to_team(t, CombatUnit.Team.PLAYER):
+			continue
+		var center: Vector2 = axial_to_pixel(t["coord"])
+		var own: bool = t["team"] == CombatUnit.Team.PLAYER
+		var col := Color(0.95, 0.7, 0.2) if own else Color(0.9, 0.25, 0.2)
+		var tex: Texture2D = _trap_token(t["def"])
+		if tex != null:
+			# Token rond (sans écrasement isométrique), posé au centre de la case.
+			var d: float = hex_size * 1.15
+			draw_texture_rect(tex, Rect2(center - Vector2(d, d) * 0.5, Vector2(d, d)), false, Color(1, 1, 1, 0.95))
+			if not own:
+				draw_arc(center, d * 0.5, 0.0, TAU, 32, col, 2.5, true)  # Anneau rouge : piège ennemi détecté.
+			continue
+		var r: float = hex_size * 0.38
+		var pts := PackedVector2Array([
+			center + Vector2(0, -r * iso_squash), center + Vector2(r, 0),
+			center + Vector2(0, r * iso_squash), center + Vector2(-r, 0)])
+		draw_colored_polygon(pts, Color(col.r, col.g, col.b, 0.55))
+		var outline := pts.duplicate()
+		outline.append(pts[0])
+		draw_polyline(outline, col, 2.0, true)
+		draw_string(ThemeDB.fallback_font, center + Vector2(-4, 5), "!", HORIZONTAL_ALIGNMENT_CENTER, -1, 14, Color(0.1, 0.07, 0.02))
+
+var _trap_token_cache: Dictionary = {}
+
+func _trap_token(def: TrapDef) -> Texture2D:
+	if _trap_token_cache.has(def.trap_id):
+		return _trap_token_cache[def.trap_id]
+	var path: String = def.get_token_path()
+	var tex: Texture2D = load(path) as Texture2D if ResourceLoader.exists(path) else null
+	_trap_token_cache[def.trap_id] = tex
+	return tex
+
+
+# Pièges ennemis d'un étage de la Tour : posés au hasard sur des cases libres du
+# milieu de la carte (hors zones de départ), propriété de l'équipe ennemie —
+# invisibles pour le joueur tant qu'il ne les a pas détectés.
+func _place_enemy_traps(trap_ids: Array) -> void:
+	var candidates: Array = []
+	for coord in _cells.keys():
+		if not _cells[coord]["is_walkable"] or _cells[coord]["occupant"] != null:
+			continue
+		if abs(coord.x) > grid_radius - 2:
+			continue  # Les deux colonnes de départ de chaque camp restent libres.
+		candidates.append(coord)
+	candidates.shuffle()
+	for id in trap_ids:
+		var def: TrapDef = TrapDatabase.build(str(id))
+		if def == null or candidates.is_empty():
+			continue
+		var coord: Vector2i = candidates.pop_back()
+		_traps.append({"def": def, "coord": coord, "team": CombatUnit.Team.ENEMY, "owner": null,
+				"revealed_teams": [], "armed": true, "victim": null, "effect": null})
+
+
+# ---------- Flèches et carreaux spéciaux (voir ArrowCatalog) ----------
+
+# Tir avec munition : résout la cible principale puis les cibles supplémentaires
+# (flèche jumelle / carreau triple : AD-3 pour le tir ; carreau électrique : ligne).
+func _resolve_weapon_attack_with_arrow(caster: CombatUnit, spell: Spell, target: CombatUnit) -> void:
+	var arrow: Arrow = spell.arrow_used
+	if arrow == null or not ["multi_1", "multi_2", "pierce_line"].has(arrow.effect):
+		_resolve_weapon_attack(caster, spell, target)
+		return
+	var extras: Array = _arrow_extra_targets(caster, arrow, target)
+	var penalty: StatusEffect = null
+	if arrow.effect != "pierce_line":
+		penalty = StatusEffect.new()
+		penalty.effect_name = "Tir multiple"
+		penalty.bonus_adresse = -3
+		penalty.duration_remaining = -1
+		caster.add_status_effect(penalty)
+	_resolve_weapon_attack(caster, spell, target)
+	for extra in extras:
+		if is_instance_valid(extra) and extra.current_hp > 0:
+			_resolve_weapon_attack(caster, spell, extra)
+	if penalty != null:
+		caster.remove_status_effect(penalty)
+
+func _arrow_extra_targets(caster: CombatUnit, arrow: Arrow, target: CombatUnit) -> Array:
+	var result: Array = []
+	match arrow.effect:
+		"multi_1", "multi_2":
+			var allies: Array = []
+			for u in _all_units:
+				if u != target and u != caster and is_instance_valid(u) and u.current_hp > 0 and u.team == target.team:
+					allies.append(u)
+			allies.sort_custom(func(a, b): return hex_distance(target.hex_coord, a.hex_coord) < hex_distance(target.hex_coord, b.hex_coord))
+			result = allies.slice(0, 1 if arrow.effect == "multi_1" else 2)
+		"pierce_line":
+			var d_target: int = hex_distance(caster.hex_coord, target.hex_coord)
+			for u in _all_units:
+				if u == target or u == caster or not is_instance_valid(u) or u.current_hp <= 0 or u.team == caster.team:
+					continue
+				if hex_distance(caster.hex_coord, u.hex_coord) <= d_target:
+					continue
+				if hex_line(caster.hex_coord, u.hex_coord).has(target.hex_coord):
+					result.append(u)
+	return result
+
+# Effets de statut posés par une munition spéciale sur une cible touchée.
+func _apply_arrow_on_hit(arrow: Arrow, target: CombatUnit) -> void:
+	var fx := StatusEffect.new()
+	match arrow.effect:
+		"esq_temp", "esq_perm":
+			fx.effect_name = "Esquive réduite"
+			fx.bonus_adresse = -2
+			fx.duration_remaining = 2 if arrow.effect == "esq_temp" else -1
+			spawn_floating_text(target.position, "ESQ -2", Color(0.5, 0.8, 0.95))
+		"at_down":
+			fx.effect_name = "Incapacité"
+			fx.bonus_attaque = -2
+			fx.duration_remaining = 3
+			spawn_floating_text(target.position, "AT -2", Color(0.9, 0.6, 0.3))
+		"bleed":
+			fx.effect_name = "Hémorragie"
+			fx.damage_per_tick = 2
+			fx.duration_remaining = 3
+			spawn_floating_text(target.position, "Hémorragie", Color(0.8, 0.15, 0.15))
+		"miss_assault":
+			target.next_attack_misses = true
+			spawn_floating_text(target.position, "Ratera son assaut", Color(0.55, 0.8, 0.95))
+			return
+		_:
+			return
+	target.add_status_effect(fx)
+
+
+# ---------- Journal de combat ----------
+
+signal combat_log(text: String, color: Color)
+
+# Écrit un événement dans la console ET dans le journal de combat affiché à l'écran.
+func _log(text: String) -> void:
+	print(text)
+	var color := Color(0.85, 0.85, 0.85)
+	if text.contains(" touche ") or text.contains("dégâts") or text.contains("critique") or text.contains("subit"):
+		color = Color(0.95, 0.45, 0.4)
+	elif text.contains(" rate ") or text.contains("échoue") or text.contains("Pas assez") or text.contains("n'a pas") or text.contains("n'a plus"):
+		color = Color(0.65, 0.65, 0.65)
+	elif text.contains("soigne") or text.contains("récupère") or text.contains("ressuscité") or text.contains("restaure"):
+		color = Color(0.45, 0.9, 0.55)
+	elif text.contains("piège") or text.contains("pose ") or text.contains("déclenche") or text.contains("désamorce") or text.contains("Détecter"):
+		color = Color(0.95, 0.75, 0.35)
+	elif text.begins_with("—"):
+		color = Color(0.9, 0.8, 0.45)
+	combat_log.emit(text, color)
+
+func log_event(text: String) -> void:
+	_log(text)

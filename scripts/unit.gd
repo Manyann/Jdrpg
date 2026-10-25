@@ -195,6 +195,14 @@ var active_effects: Array = []
 ## comme une canalisation mais sans rien se déclencher à la fin.
 var stunned_turns_remaining: int = 0
 
+## Traits spéciaux d'un ennemi de la Tour (clé "traits" de son gabarit, voir
+## TowerPoc) : paralysie, immunités, renvoi de magie, poison... Lus par HexGrid
+## (_resolve_weapon_attack, _apply_spell_effect_to_target, traits de tour).
+var traits: Dictionary = {}
+
+## Yukionna : le prochain assaut (attaque d'arme) de cette unité est raté d'office.
+var next_attack_misses: bool = false
+
 ## Ces trois-là ne sont PAS des var libres : ils sont recalculés à
 ## chaque appel de _recalculate_stats() à partir de active_effects
 ## (voir StatusEffect.grants_untargetable/grants_invulnerable/
@@ -213,8 +221,18 @@ var taunt_source = null
 var taunt_turns_remaining: int = 0
 var forced_target_now = null
 
+## Surbrillance temporaire (survol de l'ordre du tour, voir TurnManager).
+var highlighted: bool = false
+
+func set_highlight(on: bool) -> void:
+	highlighted = on
+	queue_redraw()
+
 var is_untargetable: bool = false  # Invisibilité : les ENNEMIS ne peuvent plus la cibler (alliés si).
 var is_invulnerable: bool = false  # Intangibilité/Cryogénisation : ignore tout dégât entrant.
+var is_weakened: bool = false      # Affaibli (pièges) : sorts inutilisables.
+var is_rooted: bool = false        # Entrave (pièges) : PM à 0 (dérivé des effets actifs).
+var trap_charges: Dictionary = {}  # trap_id -> pièges restants à poser ce combat.
 var is_frozen: bool = false        # Cryogénisation : ne peut plus se déplacer (voir Zone de mouvement dans HexGrid).
 
 ## Compétence passive de race/classe (voir Erèbe) — aucune classe ne
@@ -248,6 +266,9 @@ func clear_channeling() -> void:
 # effet POISON entrant). Le bool de retour est facultatif à exploiter :
 # ignoré sans erreur par tout appelant qui n'en a pas besoin.
 func add_status_effect(effect: StatusEffect) -> bool:
+	if effect.is_poison and bool(traits.get("immune_poison", false)):
+		print("%s est immunisé contre le poison." % unit_name)
+		return false
 	if effect.is_poison and equipped_metier != null and equipped_metier.grants_empoisonneur_immunity and randf() < 0.5:
 		print("%s est immunisé contre un effet de poison (Empoisonneur)." % unit_name)
 		return false
@@ -296,14 +317,29 @@ func process_status_effects_on_turn_start() -> Array:
 	var ticks: Array = []
 
 	for effect in active_effects:
-		if effect.damage_per_tick > 0:
+		if effect.mana_drain_per_tick > 0:
+			var drained: int = min(effect.mana_drain_per_tick, current_ea)
+			current_ea -= drained
+			if effect.drains_to_source and effect.source_ref != null and is_instance_valid(effect.source_ref) and effect.source_ref.current_hp > 0:
+				effect.source_ref.current_ea = min(effect.source_ref.max_ea, effect.source_ref.current_ea + drained)
+			ticks.append({"amount": drained, "label": effect.effect_name})
+		if effect.damage_per_tick > 0 or effect.tick_dice_count > 0:
 			effect._ticks_elapsed += 1
 			var should_tick = true
 			if effect.tick_every_other_turn:
 				should_tick = (effect._ticks_elapsed % 2 == 1)  # Tours 1, 3, 5...
 			if should_tick:
-				take_damage(effect.damage_per_tick)
-				ticks.append({"amount": effect.damage_per_tick, "label": effect.effect_name})
+				var tick_amount: int = effect.damage_per_tick
+				if effect.tick_dice_count > 0:
+					tick_amount = 0
+					for i in range(effect.tick_dice_count):
+						tick_amount += randi_range(1, 6)
+				var hp_before: int = current_hp
+				take_damage(tick_amount)
+				ticks.append({"amount": tick_amount, "label": effect.effect_name})
+				if effect.drains_to_source and effect.source_ref != null and is_instance_valid(effect.source_ref) and effect.source_ref.current_hp > 0:
+					var gained: int = max(0, hp_before - current_hp)
+					effect.source_ref.current_hp = min(effect.source_ref.max_hp, effect.source_ref.current_hp + gained)
 
 		# Effet à déclenchement probabiliste (voir Épée de Damocles) :
 		# à chaque tour de la cible, une chance de se déclencher ; sinon,
@@ -353,15 +389,23 @@ func get_spell_damage_bonus() -> int:
 # éventuel "*" final (présent sur certains codes dans les données
 # d'origine, jamais expliqué, traité comme une simple marque).
 func has_skill(code: String) -> bool:
-	if equipped_race != null:
-		for raw in equipped_race.inherited_skill_codes:
-			if raw.rstrip("*") == code:
-				return true
-	if equipped_metier != null:
-		for raw in equipped_metier.inherited_skill_codes:
-			if raw.rstrip("*") == code:
-				return true
+	for raw in _all_skill_sources():
+		if str(raw).rstrip("*") == code:
+			return true
 	return false
+
+# Codes de compétences de la race ET de TOUTE la lignée de métiers
+# (un Ninja a aussi celles du Rôdeur et du Voleur).
+func _all_skill_sources() -> Array:
+	var all: Array = []
+	if equipped_race != null:
+		all.append_array(equipped_race.inherited_skill_codes)
+	var metiers: Array = equipped_metiers.duplicate()
+	if equipped_metier != null and not metiers.has(equipped_metier):
+		metiers.append(equipped_metier)
+	for m in metiers:
+		all.append_array(m.inherited_skill_codes)
+	return all
 
 # Remonte parent_codes depuis equipped_metier jusqu'à la racine,
 # construit la liste de TOUS les noms de la lignée (equipped_metier.
@@ -432,6 +476,8 @@ func _recalculate_stats() -> void:
 	max_hp = base_max_hp
 	max_ea = base_max_ea
 	max_pm = base_max_pm
+	if equipped_race != null:
+		max_pm += equipped_race.pm_modifier
 	courage = base_courage
 	attack_stat = base_attack_stat
 	parade_stat = base_parade_stat
@@ -468,8 +514,6 @@ func _recalculate_stats() -> void:
 		max_pm += 1
 	if has_skill("ALM"):  # Attire les monstres : les monstres le visent en priorité (voir EnemyAI).
 		is_taunting = true
-	if equipped_race != null and equipped_race.race_name == "Walkyrie":  # Vol : +1 PM.
-		max_pm += 1
 	if has_skill("TV"):   # Tête vide
 		magic_armor_value += 1
 	if has_skill("TDM"):  # Truc de mauviette
@@ -518,6 +562,8 @@ func _recalculate_stats() -> void:
 		parade_stat += item.bonus_parade
 		armor_value += item.bonus_armure
 		magic_armor_value += item.bonus_armure_magique
+		if progression_managed and (item == equipped_race or item == equipped_metier):
+			continue
 		max_hp += item.bonus_vie
 		max_ea += item.bonus_mana
 
@@ -535,7 +581,13 @@ func _recalculate_stats() -> void:
 	is_untargetable = false
 	is_invulnerable = false
 	is_frozen = false
+	is_rooted = false
+	is_weakened = false
 	for effect in active_effects:
+		if effect.weaken > 0:
+			is_weakened = true
+		if effect.grants_rooted:
+			is_rooted = true
 		if effect.grants_untargetable:
 			is_untargetable = true
 		if effect.grants_invulnerable:
@@ -543,6 +595,12 @@ func _recalculate_stats() -> void:
 		if effect.grants_frozen:
 			is_frozen = true
 	current_ea = min(current_ea, max_ea)
+	if is_weakened:
+		force_stat = max(0, force_stat - 2)
+		adresse_stat = max(0, adresse_stat - 2)
+	if is_rooted:
+		max_pm = 0
+		current_pm = 0
 
 # Posture actuelle (choisie à son tour, persiste jusqu'au tour suivant).
 # Par défaut : Parade (pas de posture "Aucune").
@@ -719,8 +777,14 @@ var peintre_maquillage_used: int = 0
 @export var inventory_weapons: Array = []
 @export var inventory_potions: Array = []
 @export var inventory_arrows: Array = []
+## Munition sélectionnée pour les attaques à distance (reste d'un tour à l'autre tant qu'on ne change pas).
+var selected_arrow: Arrow = null
 
 var current_hp: int
+## Vrai pour un aventurier de la Tour : ses PV/EA de base incluent déjà ceux de
+## la race, des métiers et des niveaux (voir TowerManager.get_hp_ea_progression).
+var progression_managed: bool = false
+
 var current_pm: int
 var current_ea: int
 
@@ -838,6 +902,7 @@ func _ready() -> void:
 			concentration.target_mode = Spell.TargetMode.SELF
 			concentration.is_samurai_concentration = true
 			concentration.ea_cost = 0
+			concentration.icon_path = ClassSpellIcons.path_for("Concentration")
 			spells.append(concentration)
 
 	# Compétence Détecter (DET, voir skill_database.gd) : révèle toutes les
@@ -848,13 +913,57 @@ func _ready() -> void:
 		var detect := Spell.new()
 		detect.is_detect_skill = true
 		detect.spell_name = "Détecter"
-		detect.target_mode = Spell.TargetMode.BATTLEFIELD
-		detect.battlefield_radius = 2
+		# Zone de 3 cases de large (case visée + voisines), portée 2 : révèle
+		# unités invisibles ET pièges (voir HexGrid._cast_detect_zone).
+		detect.target_mode = Spell.TargetMode.ZONE
+		detect.min_range = 1
+		detect.max_range = 2
 		detect.reveals_invisible = true
 		detect.unavoidable = true
 		detect.ea_cost = 0
 		detect.icon_path = "res://assets/spell_icons/mage/detection_de_zone.png"
 		spells.append(detect)
+
+	# Désamorcer (DE/DES) : retire un piège détecté ou déclenché (case adjacente).
+	if has_skill("DE") or has_skill("DES"):
+		var disarm := Spell.new()
+		disarm.is_disarm_skill = true
+		disarm.spell_name = "Désamorcer"
+		disarm.icon_path = ClassSpellIcons.path_for("Désamorcer")
+		disarm.target_mode = Spell.TargetMode.ZONE
+		disarm.zone_offsets = [Vector2i.ZERO]
+		disarm.min_range = 1
+		disarm.max_range = 1
+		disarm.unavoidable = true
+		disarm.ea_cost = 0
+		disarm.info_text = "Retire un piège détecté (ou connu de ton groupe), ou libère une victime d'un piège déclenché. Test d'Adresse. Case adjacente."
+		spells.append(disarm)
+
+	# Poser des pièges : un sort par type dont la race/les métiers donnent des charges
+	# (voir TrapDatabase.CHARGES, le plus haut l'emporte).
+	var trap_race: String = equipped_race.race_name if equipped_race != null else ""
+	var trap_metiers: Array = []
+	for m in equipped_metiers:
+		trap_metiers.append(m.metier_name)
+	for trap_id in TrapDatabase.all_ids():
+		var charges: int = TrapDatabase.charges_for(trap_id, trap_race, trap_metiers)
+		if charges <= 0:
+			continue
+		var def: TrapDef = TrapDatabase.build(trap_id)
+		trap_charges[trap_id] = charges
+		var ts := Spell.new()
+		ts.is_trap_spell = true
+		ts.trap_id = trap_id
+		ts.spell_name = def.trap_name
+		ts.target_mode = Spell.TargetMode.ZONE
+		ts.zone_offsets = [Vector2i.ZERO]
+		ts.min_range = def.place_min_range
+		ts.max_range = def.place_max_range
+		ts.unavoidable = true
+		ts.ea_cost = 0
+		ts.icon_path = def.get_icon_path()
+		ts.info_text = def.get_summary() + "\nCharges : %d" % charges
+		spells.append(ts)
 
 	# Sorts de la branche de métier Walkyrie (voir
 	# walkyrie_spell_catalog.gd) — liés au MÉTIER équipé, pas à la race
@@ -1250,8 +1359,16 @@ func use_potion(potion: Potion) -> int:
 # la liste de sorts et génère celle de la nouvelle arme. Renvoie false
 # si l'action du tour n'est plus disponible.
 func equip_weapon(new_weapon: Weapon) -> bool:
+	if not can_equip_main_hand(new_weapon):
+		return false
 	if not try_use_utility_action():
 		return false
+
+	# Arme à 2 mains : la seconde arme retourne dans l'inventaire.
+	if new_weapon.two_handed and off_hand_weapon != null:
+		spells = spells.filter(func(s): return s.source_weapon != off_hand_weapon)
+		inventory_weapons.append(off_hand_weapon)
+		off_hand_weapon = null
 
 	# Retire l'attaque générée par l'ancienne arme principale.
 	spells = spells.filter(func(s): return s.source_weapon != equipped_weapon)
@@ -1263,6 +1380,54 @@ func equip_weapon(new_weapon: Weapon) -> bool:
 	equipped_weapon = new_weapon
 	spells.insert(0, equipped_weapon.create_attack_spell())
 	_recalculate_stats()
+	return true
+
+# Vrai si `new_weapon` peut aller en SECONDE main : Ambidextrie, ou Pirate avec
+# une arme à feu ET une arme de corps à corps (même règle qu'à la création).
+# Raison pour laquelle `new_weapon` ne peut pas aller en main principale
+# ("" = possible) : une arme à 2 mains exige la seconde main vide.
+func main_hand_block_reason(new_weapon: Weapon) -> String:
+	if off_hand_weapon != null and off_hand_weapon.two_handed:
+		return "La seconde arme est à 2 mains"
+	return ""
+
+func can_equip_main_hand(new_weapon: Weapon) -> bool:
+	return main_hand_block_reason(new_weapon) == ""
+
+# Raison pour laquelle `new_weapon` ne peut pas aller en seconde main.
+func off_hand_block_reason(new_weapon: Weapon) -> String:
+	if new_weapon.two_handed:
+		return "Arme à 2 mains : ne se porte pas en seconde main"
+	if equipped_weapon != null and equipped_weapon.two_handed:
+		return "L'arme principale est à 2 mains"
+	return ""
+
+func can_equip_off_hand(new_weapon: Weapon) -> bool:
+	if off_hand_block_reason(new_weapon) != "":
+		return false
+	if has_ambidextrie:
+		return true
+	if has_metier("Pirate") and equipped_weapon != null:
+		var main_firearm: bool = equipped_weapon.weapon_name.begins_with("Pistolet")
+		var new_firearm: bool = new_weapon.weapon_name.begins_with("Pistolet")
+		return main_firearm != new_firearm
+	return false
+
+# Équipe `new_weapon` en seconde main (consomme l'action utilitaire du tour) :
+# l'ancienne arme secondaire retourne dans l'inventaire et son attaque est remplacée.
+func equip_off_hand_weapon(new_weapon: Weapon) -> bool:
+	if not can_equip_off_hand(new_weapon):
+		return false
+	if not try_use_utility_action():
+		return false
+	if off_hand_weapon != null:
+		spells = spells.filter(func(s): return s.source_weapon != off_hand_weapon)
+		inventory_weapons.append(off_hand_weapon)
+	inventory_weapons.erase(new_weapon)
+	off_hand_weapon = new_weapon
+	_recalculate_stats()  # Pirate : peut accorder l'Ambidextrie avec ce combo.
+	if has_ambidextrie:
+		spells.insert(min(1, spells.size()), off_hand_weapon.create_attack_spell())
 	return true
 
 # Change l'armure équipée (une seule à la fois). Comme equip_weapon,
@@ -1319,6 +1484,9 @@ func _draw() -> void:
 		draw_texture_rect(token, Rect2(-TOKEN_RADIUS, -TOKEN_RADIUS, TOKEN_RADIUS * 2, TOKEN_RADIUS * 2), false)
 		draw_arc(Vector2.ZERO, TOKEN_RADIUS, 0, TAU, 48, color, 3.0, true)
 		name_y_offset = -TOKEN_RADIUS - 6
+		if highlighted:
+			draw_circle(Vector2.ZERO, TOKEN_RADIUS + 5, Color(1, 0.9, 0.5, 0.22))
+			draw_arc(Vector2.ZERO, TOKEN_RADIUS + 5, 0, TAU, 48, Color(1, 0.9, 0.5), 4.0, true)
 	elif sprite_sheet != null:
 		# Le vrai sprite (enfant AnimatedSprite2D) s'affiche par-dessus.
 		# sprite_y_offset corrige une éventuelle marge interne/transparente
@@ -1335,6 +1503,9 @@ func _draw() -> void:
 		draw_circle(Vector2.ZERO, radius, color)
 		draw_arc(Vector2.ZERO, radius, 0, TAU, 32, Color.BLACK, 2.0, true)
 		name_y_offset = -radius - 8
+
+	if highlighted and token == null:
+		draw_arc(Vector2.ZERO, radius + 6, 0, TAU, 32, Color(1, 0.9, 0.5), 4.0, true)
 
 	# Nom de l'unité affiché au-dessus.
 	var label_width: float = 110.0 if token != null else radius * 2
@@ -1365,7 +1536,7 @@ func move_to_pixel(pixel_pos: Vector2) -> void:
 # (le Berzerk dépense de la Rage, le Gladiateur de la Gloire — voir
 # get_resource_summary).
 func get_resource_name() -> String:
-	return "PA" if has_metier("Prêtre") else "EA"
+	return "EA"
 
 # Ressources affichées pour cette unité (fiche personnage, bandeau de tour).
 func get_resource_summary(compact: bool = false) -> String:
@@ -1387,16 +1558,10 @@ func get_resource_summary(compact: bool = false) -> String:
 # Codes des compétences (race + métiers), sans le « * » final.
 func get_skill_codes() -> Array:
 	var codes: Array = []
-	var sources: Array = []
-	if equipped_race != null:
-		sources.append(equipped_race.inherited_skill_codes)
-	if equipped_metier != null:
-		sources.append(equipped_metier.inherited_skill_codes)
-	for src in sources:
-		for raw in src:
-			var code: String = str(raw).rstrip("*")
-			if code != "" and not codes.has(code):
-				codes.append(code)
+	for raw in _all_skill_sources():
+		var code: String = str(raw).rstrip("*")
+		if code != "" and not codes.has(code):
+			codes.append(code)
 	return codes
 
 # Coup décisif : réservé aux Chasseurs de primes et de monstres.

@@ -294,6 +294,9 @@ static func build_arrows(template_name: String) -> Array:
 		a.arrow_name = arrow_data["name"]
 		a.damage_bonus = arrow_data.get("damage_bonus", 0)
 		a.quantity = arrow_data.get("quantity", 10)
+		var catalog_entry: Dictionary = ArrowCatalog.find_by_name(a.arrow_name)
+		a.effect = arrow_data.get("effect", catalog_entry.get("effect", ""))
+		a.info_text = catalog_entry.get("info", "")
 		arrows.append(a)
 
 	return arrows

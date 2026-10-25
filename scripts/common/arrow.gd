@@ -18,6 +18,11 @@ class_name Arrow
 ## correspondant se grise et ne peut plus être utilisé.
 @export var quantity: int = 10
 
+## Code d'effet spécial (voir ArrowCatalog) et texte d'information.
+@export var effect: String = ""
+@export var info_text: String = ""
+@export var category: String = "Fleche"
+
 func get_display_text() -> String:
 	var bonus_text = ""
 	if damage_bonus > 0:
@@ -25,3 +30,6 @@ func get_display_text() -> String:
 	elif damage_bonus < 0:
 		bonus_text = " (%d dégâts)" % damage_bonus
 	return "%s%s — x%d" % [arrow_name, bonus_text, quantity]
+
+func get_tooltip_text() -> String:
+	return "%s\n%s" % [get_display_text(), info_text] if info_text != "" else get_display_text()

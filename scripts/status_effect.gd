@@ -53,6 +53,12 @@ var source_ref = null  # Unité à l'origine de l'effet (aura du Méca Tanker).
 # champs ailleurs que via l'effet lui-même) ---
 @export var grants_untargetable: bool = false  # Invisibilité : plus ciblable par les ennemis.
 @export var grants_invulnerable: bool = false  # Intangibilité/Cryogénisation : ignore tout dégât.
+@export var mana_drain_per_tick: int = 0       # Drain de mana : -N EA à la victime par tour (+N EA au poseur si drains_to_source).
+@export var move: int = 0                      # Repoussé : nombre de cases dont la victime est repoussée (instantané).
+@export var weaken: int = 0                    # Affaibli (>0) : -2 Force et Adresse, aucun sort utilisable (attaques d'arme OK).
+@export var grants_rooted: bool = false        # Entrave (pièges) : PM à 0, mais peut encore agir.
+## Drain de vie : à chaque tick de dégâts, le lanceur (source_ref) récupère les PV perdus.
+@export var drains_to_source: bool = false
 @export var grants_frozen: bool = false        # Cryogénisation : ne peut plus se déplacer.
 
 ## Concentration (Samurai) : consommés par la PROCHAINE attaque
@@ -89,6 +95,15 @@ var source_ref = null  # Unité à l'origine de l'effet (aura du Méca Tanker).
 ## HexGrid._try_dodge, qui vérifie maintenant les deux sources.
 @export var dodge_counter_chance: float = 0.0
 @export var dodge_counter_melee_only: bool = false
+
+## Bonus (ou malus, valeur négative) de dégâts PLATS sur les attaques d'ARME
+## du porteur — Acide du Ver-dragon (-1), Arme brisée (-999). Indépendant des
+## dés ci-dessous. Voir HexGrid._roll_weapon_bonus_dice.
+@export var bonus_weapon_flat_damage: int = 0
+
+## Dégâts en DÉS à chaque tick (ex: poison « 1D chaque tour »). Prioritaire
+## sur damage_per_tick quand > 0. Voir CombatUnit.process_status_effects_on_turn_start.
+@export var tick_dice_count: int = 0
 
 ## Bonus de dégâts en dés ajouté aux attaques d'ARME (pas aux sorts) —
 ## voir Zéphir/Poings de terre/Enchantement. Un seul terme (pas de

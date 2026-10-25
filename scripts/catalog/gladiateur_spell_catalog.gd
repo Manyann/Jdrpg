@@ -25,7 +25,7 @@ static func _build_doigt_dhonneur() -> Spell:
 	s.spell_name = "Doigt d'honneur"
 	s.target_mode = Spell.TargetMode.SINGLE_ENEMY
 	s.gloire_cost = 5
-	s.spell_type = Spell.SpellType.PHYSICAL
+	s.spell_type = Spell.SpellType.NONE
 	s.damage = 0  # Aucun dégât : seulement la provocation.
 	s.forces_attack_on_caster_turns = 3
 	s.info_text = "Force la cible à n'attaquer que le lanceur pendant 3 de ses tours."
@@ -38,7 +38,7 @@ static func _build_coup_de_bouclier() -> Spell:
 	s.spell_name = "Coup de bouclier"
 	s.target_mode = Spell.TargetMode.SINGLE_ENEMY
 	s.gloire_cost = 7
-	s.spell_type = Spell.SpellType.PHYSICAL
+	s.spell_type = Spell.SpellType.NONE
 	s.stun_turns = 2  # "Passe ses 2 prochains tours".
 	s.min_range = 1
 	s.max_range = 1
@@ -55,7 +55,7 @@ static func _build_tortue() -> Spell:
 	s.spell_name = "Tortue"
 	s.target_mode = Spell.TargetMode.SELF
 	s.gloire_cost = 10
-	s.spell_type = Spell.SpellType.PHYSICAL
+	s.spell_type = Spell.SpellType.NONE
 	s.effect_to_apply = buff
 	return s
 
@@ -66,7 +66,7 @@ static func _build_un_pour_tous() -> Spell:
 	s.is_un_pour_tous = true
 	s.ea_cost = 0
 	s.gloire_cost = 0  # Aucun coût précisé dans les données d'origine.
-	s.spell_type = Spell.SpellType.PHYSICAL
+	s.spell_type = Spell.SpellType.NONE
 	s.info_text = "Le gladiateur perd 3 AT et encaisse à la place d'un allié les 3 prochains dégâts que celui-ci va subir."
 	s.min_range = 1
 	s.max_range = 6

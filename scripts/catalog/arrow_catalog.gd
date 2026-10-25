@@ -2,9 +2,16 @@ extends RefCounted
 class_name ArrowCatalog
 
 # ============================================================
-# arrow_catalog.gd — GÉNÉRÉ à partir de fleches_data.ts (23 objets).
-# "category" vaut "Fleche" (arc) ou "Carreau" (arbalète) — pas encore
-# de vérification de compatibilité arme/munition dans le code.
+# arrow_catalog.gd — liste des flèches (arc) et carreaux (arbalète).
+# "category" : "Fleche" ou "Carreau". "effect" : code d'effet spécial lu
+# par HexGrid (voir _apply_arrow_on_hit / _arrow_extra_targets) :
+#   esq_temp (ESQ -2, 2 tours) · esq_perm (ESQ -2 jusqu'à la fin du combat)
+#   at_down (AT -2) · miss_assault (la cible rate son prochain assaut)
+#   bleed (hémorragie) · magic (dégâts magiques) · pierce_line (ennemis en
+#   ligne derrière la cible) · multi_1 / multi_2 (AD-3, + N alliés de la
+#   cible les plus proches) · vs_animal (+2 contre les animaux)
+#   recover (récupérée à la fin du combat)
+# "base_percentage" : taux de la donnée d'origine (rareté en boutique).
 # ============================================================
 
 const ITEMS: Array = [
@@ -15,14 +22,7 @@ const ITEMS: Array = [
 		"price": 1,
 		"base_percentage": 95,
 		"info": "Lot de 5",
-	},
-	{
-		"name": "Flèche grappin",
-		"category": "Fleche",
-		"damage_bonus": 0,
-		"price": 5,
-		"base_percentage": 90,
-		"info": "Lot de 5. Permet d’accrocher une corde",
+		"effect": "",
 	},
 	{
 		"name": "Fleche de guerre",
@@ -31,6 +31,7 @@ const ITEMS: Array = [
 		"price": 5,
 		"base_percentage": 80,
 		"info": "Lot de 5",
+		"effect": "",
 	},
 	{
 		"name": "Fleche rapide",
@@ -38,7 +39,8 @@ const ITEMS: Array = [
 		"damage_bonus": 0,
 		"price": 5,
 		"base_percentage": 80,
-		"info": "Lot de 5. ESQ -2",
+		"info": "Lot de 5. Cible : ESQ -2",
+		"effect": "esq_temp",
 	},
 	{
 		"name": "Fleche jumelle",
@@ -46,7 +48,8 @@ const ITEMS: Array = [
 		"damage_bonus": 0,
 		"price": 5,
 		"base_percentage": 70,
-		"info": "Lot de 5. AD-3. Vise 2 cibles",
+		"info": "Lot de 5. AD-3. Vise 1 cible et son allié le plus proche",
+		"effect": "multi_1",
 	},
 	{
 		"name": "Flèche glacée",
@@ -54,7 +57,8 @@ const ITEMS: Array = [
 		"damage_bonus": 0,
 		"price": 10,
 		"base_percentage": 70,
-		"info": "ESQ -2 permanent",
+		"info": "Cible : ESQ -2 permanent",
+		"effect": "esq_perm",
 	},
 	{
 		"name": "Flèche de chasse",
@@ -63,6 +67,7 @@ const ITEMS: Array = [
 		"price": 10,
 		"base_percentage": 60,
 		"info": "Lot de 5. +2 dégâts contre les animaux",
+		"effect": "vs_animal",
 	},
 	{
 		"name": "Flèche incapacitante",
@@ -70,7 +75,8 @@ const ITEMS: Array = [
 		"damage_bonus": 0,
 		"price": 15,
 		"base_percentage": 60,
-		"info": "AT -2",
+		"info": "Cible : AT -2",
+		"effect": "at_down",
 	},
 	{
 		"name": "Flèche barbelée",
@@ -78,7 +84,8 @@ const ITEMS: Array = [
 		"damage_bonus": 2,
 		"price": 25,
 		"base_percentage": 40,
-		"info": "Inflige hémoragie",
+		"info": "Inflige hémorragie",
+		"effect": "bleed",
 	},
 	{
 		"name": "Flèche renforcée",
@@ -86,7 +93,8 @@ const ITEMS: Array = [
 		"damage_bonus": 2,
 		"price": 150,
 		"base_percentage": 40,
-		"info": "Lot de 5. Ne se brise pas",
+		"info": "Lot de 5. Récupérée à la fin du combat",
+		"effect": "recover",
 	},
 	{
 		"name": "Fleche éthérée",
@@ -94,15 +102,8 @@ const ITEMS: Array = [
 		"damage_bonus": 0,
 		"price": 50,
 		"base_percentage": 25,
-		"info": "Dégat de l arme devienne magique",
-	},
-	{
-		"name": "Fleche bénite",
-		"category": "Fleche",
-		"damage_bonus": 0,
-		"price": 200,
-		"base_percentage": 15,
-		"info": "Critique sur 1-10",
+		"info": "Dégât de l'arme devient magique",
+		"effect": "magic",
 	},
 	{
 		"name": "Carreau de base",
@@ -111,6 +112,7 @@ const ITEMS: Array = [
 		"price": 1,
 		"base_percentage": 95,
 		"info": "Lot de 5",
+		"effect": "",
 	},
 	{
 		"name": "Carreau de guerre",
@@ -119,6 +121,7 @@ const ITEMS: Array = [
 		"price": 10,
 		"base_percentage": 90,
 		"info": "Lot de 5",
+		"effect": "",
 	},
 	{
 		"name": "Carreau rapide",
@@ -126,7 +129,8 @@ const ITEMS: Array = [
 		"damage_bonus": 0,
 		"price": 10,
 		"base_percentage": 75,
-		"info": "Lot de 5. ESQ -2",
+		"info": "Lot de 5. Cible : ESQ -2",
+		"effect": "esq_temp",
 	},
 	{
 		"name": "Carreau éléctrique",
@@ -134,7 +138,8 @@ const ITEMS: Array = [
 		"damage_bonus": 0,
 		"price": 15,
 		"base_percentage": 70,
-		"info": "Cible: 1/4 chance lache son arme",
+		"info": "Touche la cible et tous les ennemis en ligne droite derrière elle",
+		"effect": "pierce_line",
 	},
 	{
 		"name": "Carreau de chasse",
@@ -143,6 +148,7 @@ const ITEMS: Array = [
 		"price": 15,
 		"base_percentage": 70,
 		"info": "Lot de 5. +2 dégâts contre les animaux",
+		"effect": "vs_animal",
 	},
 	{
 		"name": "Carreau incapacitant",
@@ -151,6 +157,7 @@ const ITEMS: Array = [
 		"price": 25,
 		"base_percentage": 60,
 		"info": "Cible rate un assaut",
+		"effect": "miss_assault",
 	},
 	{
 		"name": "Carreau triple",
@@ -158,7 +165,8 @@ const ITEMS: Array = [
 		"damage_bonus": 0,
 		"price": 30,
 		"base_percentage": 40,
-		"info": "Lot de 5. AD-3. Vise 3 cibles",
+		"info": "Lot de 5. AD-3. Vise 1 cible et ses 2 alliés les plus proches",
+		"effect": "multi_2",
 	},
 	{
 		"name": "Carreau barbelé",
@@ -166,7 +174,8 @@ const ITEMS: Array = [
 		"damage_bonus": 2,
 		"price": 35,
 		"base_percentage": 40,
-		"info": "Inflige hémoragie",
+		"info": "Inflige hémorragie",
+		"effect": "bleed",
 	},
 	{
 		"name": "Carreau éthérée",
@@ -174,7 +183,8 @@ const ITEMS: Array = [
 		"damage_bonus": 0,
 		"price": 75,
 		"base_percentage": 25,
-		"info": "Dégat de l arme devienne magique",
+		"info": "Dégât de l'arme devient magique",
+		"effect": "magic",
 	},
 	{
 		"name": "Carreau renforcé",
@@ -182,17 +192,16 @@ const ITEMS: Array = [
 		"damage_bonus": 3,
 		"price": 150,
 		"base_percentage": 40,
-		"info": "Lot de 5. Ne se brise pas",
-	},
-	{
-		"name": "Carreau bénie",
-		"category": "Carreau",
-		"damage_bonus": 0,
-		"price": 220,
-		"base_percentage": 15,
-		"info": "Critique sur 1-10",
+		"info": "Lot de 5. Récupéré à la fin du combat",
+		"effect": "recover",
 	},
 ]
 
 static func get_all() -> Array:
 	return ITEMS
+
+static func find_by_name(arrow_name: String) -> Dictionary:
+	for item in ITEMS:
+		if item["name"] == arrow_name:
+			return item
+	return {}

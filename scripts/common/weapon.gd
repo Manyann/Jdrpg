@@ -24,6 +24,10 @@ enum WeaponType { MELEE, RANGED }
 @export var price: int = 0
 @export var info_text: String = ""
 
+## Arme à 2 mains (haches/marteaux à 2 mains) : occupe les deux mains, donc
+## incompatible avec une seconde arme, même avec l'Ambidextrie.
+@export var two_handed: bool = false
+
 ## Dégâts en dés (façon "1D+3" = dice_count 1, dice_modifier 3, dé à 6
 ## faces implicite). Si dice_count = 0, l'arme fait des dégâts FIXES
 ## (juste dice_modifier, pas de hasard) — c'est le cas des armes

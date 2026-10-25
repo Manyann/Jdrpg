@@ -5,25 +5,12 @@ extends Control
 # l'infini, sous forme de CARTES. À attacher à un node Control dans une
 # scène dédiée — construit toute son interface par code à _ready().
 #
-# Une carte vide « + » en fin de rangée : un clic crée un personnage
-# (1 point) et la carte se transforme en carte de personnage, de haut
-# en bas :
-#   - nom, bouton de retrait
-#   - race : flèches ◀ ▶ autour de l'illustration (le NOM s'affiche tant
-#     qu'il n'y a pas d'image, voir RACE_IMAGE_DIR)
-#   - niveau, avec - / + (les niveaux 2, 5 et 8 donnent 1 point de
-#     caractéristique et relèvent la limite des stats, 13 au niveau 1)
-#   - caractéristiques (départ à 8, chance à 1, 19 points à répartir par
-#     personnage, avec - / + ; minimums/maximums de race affichés)
-#   - métier de base, puis métiers de niveau 4 / 7 / 10 (listes
-#     déroulantes : seuls les métiers non interdits à la race sont
-#     listés, et ceux dont les caractéristiques ne suffisent pas sont
-#     grisés avec ce qui leur manque)
-#   - équipement : arme, 5 emplacements d'armure (casque, plastron,
-#     brassières, jambières, bottes), bouclier à part, accessoires. Ouvre la
-#     boutique à filtres plus bas, qui n'offre que ce que la race et le
-#     métier du personnage permettent.
-# Sous les cartes : bouton « Valider », qui lance l'ascension (étage 1 dans
+# Disposition en 3 colonnes : liste des RACES (gauche, avec leur token), fiche du
+# personnage sélectionné (centre : nom, niveau, caractéristiques, métiers,
+# équipement), emplacements de l'ÉQUIPE (droite). Un clic sur un emplacement
+# vide puis sur une race crée le personnage (1 point) ; un clic sur une race
+# change celle du personnage sélectionné.
+# En bas : bouton « Valider », qui lance l'ascension (étage 1 dans
 # la scène de combat, voir TowerManager.start_run).
 #
 # Dépend de TowerManager (autoload, voir tower_manager.gd) pour TOUTE la
@@ -43,9 +30,6 @@ const CARD_HEIGHT: int = 700
 ## race s'affiche à la place.
 const RACE_IMAGE_DIR: String = "res://assets/races/"
 
-var _header_label: Label
-var _cards_scroll: ScrollContainer
-var _cards_row: HBoxContainer
 var _validate_button: Button
 var _warning_label: Label
 
@@ -54,6 +38,12 @@ var _warning_label: Label
 var _notice: String = ""
 
 var _equip_popup: PopupPanel
+
+# Sauvegarde / chargement (voir TowerManager.save_to_slot / load_from_slot).
+var _save_popup: PopupPanel
+var _save_popup_box: VBoxContainer
+var _continue_button: Button
+var _pending_overwrite_slot: int = -1  # Emplacement dont l'écrasement attend une confirmation.
 var _equip_popup_index: int = -1
 var _equip_popup_content: VBoxContainer
 var _equip_popup_gold_label: Label
@@ -86,120 +76,29 @@ func _fit_to_viewport() -> void:
 	size = get_viewport_rect().size
 
 # ---------- Construction de l'interface ----------
+# Disposition en 3 colonnes : liste des races (gauche), fiche du personnage
+# sélectionné (centre), emplacements de l'équipe (droite).
 
-func _build_ui() -> void:
-	var margin := MarginContainer.new()
-	margin.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
-	margin.add_theme_constant_override("margin_left", 20)
-	margin.add_theme_constant_override("margin_top", 20)
-	margin.add_theme_constant_override("margin_right", 20)
-	margin.add_theme_constant_override("margin_bottom", 20)
-	add_child(margin)
+const GOLD := UITheme.GOLD
+const GOLD_DIM := UITheme.GOLD_DIM
+const CREAM := UITheme.CREAM
+const SLOT_COUNT_MIN: int = 6
 
-	var root := VBoxContainer.new()
-	root.add_theme_constant_override("separation", 10)
-	margin.add_child(root)
+## Chemin de la scène de l'écran précédent (bouton « Retour »). Vide = pas de bouton.
+const BACK_SCENE_PATH: String = ""
+## Image de fond facultative (res://assets/ui/team_bg.png) ; sinon un fond uni sombre.
+const BACKGROUND_PATH: String = "res://assets/ui/team_bg.png"
 
-	var title := Label.new()
-	title.text = "Tour de l'infini — Création de l'équipe"
-	title.add_theme_font_size_override("font_size", 24)
-	root.add_child(title)
+var _points_label: Label
+var _gold_label: Label
+var _race_list: VBoxContainer
+var _center_scroll: ScrollContainer
+var _center_box: VBoxContainer
+var _slot_grid: GridContainer
+var _slot_scroll: ScrollContainer
 
-	_header_label = Label.new()
-	_header_label.add_theme_font_size_override("font_size", 16)
-	root.add_child(_header_label)
-
-	# Rangée de cartes : défile horizontalement (jusqu'à 16 personnages)
-	# ET verticalement (une carte est plus haute qu'un écran de 648 px).
-	_cards_scroll = ScrollContainer.new()
-	_cards_scroll.size_flags_vertical = Control.SIZE_EXPAND_FILL
-	_cards_scroll.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-	_cards_scroll.custom_minimum_size = Vector2(0, 320)  # Filet de sécurité : ne peut pas s'écraser à 0.
-	root.add_child(_cards_scroll)
-
-	_cards_row = HBoxContainer.new()
-	_cards_row.add_theme_constant_override("separation", 12)
-	_cards_row.size_flags_vertical = Control.SIZE_SHRINK_BEGIN  # Cartes de taille fixe (voir CARD_HEIGHT).
-	_cards_scroll.add_child(_cards_row)
-
-	var bottom := VBoxContainer.new()
-	bottom.add_theme_constant_override("separation", 4)
-	root.add_child(bottom)
-
-	_warning_label = Label.new()
-	_warning_label.add_theme_font_size_override("font_size", 12)
-	_warning_label.modulate = Color(0.9, 0.6, 0.3)
-	_warning_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
-	bottom.add_child(_warning_label)
-
-	_validate_button = Button.new()
-	_validate_button.text = "Valider"
-	_validate_button.tooltip_text = "Lance l'ascension avec cette équipe"
-	_validate_button.custom_minimum_size = Vector2(220, 40)
-	_validate_button.size_flags_horizontal = Control.SIZE_SHRINK_CENTER
-	_validate_button.pressed.connect(_on_validate_pressed)
-	bottom.add_child(_validate_button)
-
-	_build_equip_popup()
-
-# ---------- Rafraîchissement ----------
-
-# Reconstruit toutes les cartes. Le défilement est conservé : sans ça,
-# chaque clic sur un +/- renverrait la vue au début de la rangée.
-func _refresh() -> void:
-	if _cards_row == null:
-		return
-	var keep_h: int = _cards_scroll.scroll_horizontal
-	var keep_v: int = _cards_scroll.scroll_vertical
-
-	_header_label.text = "Points restants : %d / %d    —    Or : %d PO" % [
-		TowerManager.points_remaining, TowerManager.TOTAL_POINTS, TowerManager.gold
-	]
-	if TowerManager.last_run_floors_cleared >= 0:
-		_header_label.text += "    —    Dernière ascension : %d étage(s) franchi(s)" % TowerManager.last_run_floors_cleared
-
-	for child in _cards_row.get_children():
-		_cards_row.remove_child(child)  # Retiré TOUT DE SUITE (pas seulement libéré en fin d'image) : la taille du contenu ne double pas.
-		child.queue_free()
-	for i in range(TowerManager.team.size()):
-		_cards_row.add_child(_build_character_card(i))
-	_cards_row.add_child(_build_add_card())
-
-	# Ce que les restrictions de race/métier ont retiré à un personnage
-	# (objet interdit rendu à la boutique, remboursé) : on l'affiche.
-	var equipment_notice: String = TowerManager.take_equipment_notice()
-	if equipment_notice != "":
-		_notice = equipment_notice if _notice == "" else _notice + " " + equipment_notice
-
-	_update_validate_state()
-
-	if is_inside_tree():
-		await get_tree().process_frame  # Le contenu doit être remesuré avant de restaurer le défilement.
-		_cards_scroll.scroll_horizontal = keep_h
-		_cards_scroll.scroll_vertical = keep_v
-
-func _update_validate_state() -> void:
-	var ready_to_start: bool = TowerManager.is_team_ready()
-	_validate_button.disabled = not ready_to_start
-	_warning_label.text = ""
-	if _notice != "":
-		_warning_label.text = _notice
-		_notice = ""
-		return
-	if ready_to_start:
-		return
-	if TowerManager.team.is_empty():
-		_warning_label.text = "Ajoute au moins un personnage avec la carte « + »."
-	elif TowerManager.points_remaining > 0:
-		_warning_label.text = "Il reste %d point(s) à dépenser en niveaux." % TowerManager.points_remaining
-	else:
-		for i in range(TowerManager.team.size()):
-			var reason: String = TowerManager.get_incomplete_reason(i)
-			if reason != "":
-				_warning_label.text = "%s : %s." % [TowerManager.team[i].character_name, reason]
-				return
-
-# ---------- Cartes ----------
+## Emplacement sélectionné : un index >= team.size() = emplacement vide.
+var _selected_index: int = 0
 
 func _make_label(text: String) -> Label:
 	var l := Label.new()
@@ -215,73 +114,465 @@ func _card_style(border: Color, background: Color) -> StyleBoxFlat:
 	style.set_content_margin_all(10)
 	return style
 
-# La carte vide « + » : un clic ajoute un personnage (1 point).
-func _build_add_card() -> Control:
+func _panel_style(border: Color = GOLD_DIM, radius: int = 6, margin: int = 12) -> StyleBoxFlat:
+	return UITheme.panel_style(border, radius, margin)
+
+func _button_style(bg: Color, border: Color) -> StyleBoxFlat:
+	return UITheme.button_style(bg, border)
+
+# Thème sombre et or (voir UITheme) appliqué à tout l'écran.
+func _build_theme() -> Theme:
+	return UITheme.build_theme()
+
+func _section_title(text: String, size: int = 20) -> Label:
+	var l := Label.new()
+	l.text = text
+	l.add_theme_font_size_override("font_size", size)
+	l.add_theme_color_override("font_color", Color(0.95, 0.85, 0.6))
+	return l
+
+func _build_ui() -> void:
+	theme = _build_theme()
+
+	# Fond : image facultative, sinon aplat sombre.
+	var bg_tex = load(BACKGROUND_PATH) if ResourceLoader.exists(BACKGROUND_PATH) else null
+	if bg_tex is Texture2D:
+		var bg := TextureRect.new()
+		bg.texture = bg_tex
+		bg.expand_mode = TextureRect.EXPAND_IGNORE_SIZE
+		bg.stretch_mode = TextureRect.STRETCH_KEEP_ASPECT_COVERED
+		bg.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
+		add_child(bg)
+	else:
+		var bg := ColorRect.new()
+		bg.color = Color(0.03, 0.04, 0.07)
+		bg.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
+		add_child(bg)
+
+	var margin := MarginContainer.new()
+	margin.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
+	for side in ["left", "top", "right", "bottom"]:
+		margin.add_theme_constant_override("margin_" + side, 16)
+	add_child(margin)
+
+	var root := VBoxContainer.new()
+	root.add_theme_constant_override("separation", 10)
+	margin.add_child(root)
+
+	# --- Bandeau du haut : titre à gauche, points et or à droite ---
+	var top := HBoxContainer.new()
+	top.add_theme_constant_override("separation", 12)
+	root.add_child(top)
+
+	var title_panel := PanelContainer.new()
+	title_panel.add_theme_stylebox_override("panel", _panel_style(GOLD_DIM, 8, 8))
+	top.add_child(title_panel)
+	var title_row := HBoxContainer.new()
+	title_row.add_theme_constant_override("separation", 10)
+	title_panel.add_child(title_row)
+	var star := _section_title("✦", 34)
+	star.add_theme_color_override("font_color", GOLD)
+	title_row.add_child(star)
+	var title_box := VBoxContainer.new()
+	title_box.add_theme_constant_override("separation", 0)
+	title_row.add_child(title_box)
+	title_box.add_child(_section_title("Création de l'équipe", 28))
+	var subtitle := _make_label("Tour de l'infini")
+	subtitle.add_theme_font_size_override("font_size", 12)
+	subtitle.modulate = Color(0.8, 0.75, 0.6)
+	title_box.add_child(subtitle)
+
+	var spacer := Control.new()
+	spacer.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	top.add_child(spacer)
+
+	var info_panel := PanelContainer.new()
+	info_panel.size_flags_vertical = Control.SIZE_SHRINK_CENTER
+	info_panel.add_theme_stylebox_override("panel", _panel_style(GOLD_DIM, 20, 10))
+	top.add_child(info_panel)
+	var info_row := HBoxContainer.new()
+	info_row.add_theme_constant_override("separation", 22)
+	info_panel.add_child(info_row)
+	_points_label = _make_label("")
+	_points_label.add_theme_font_size_override("font_size", 16)
+	info_row.add_child(_points_label)
+	_gold_label = _make_label("")
+	_gold_label.add_theme_font_size_override("font_size", 16)
+	_gold_label.add_theme_color_override("font_color", Color(0.95, 0.8, 0.35))
+	info_row.add_child(_gold_label)
+
+	# --- Trois colonnes ---
+	var columns := HBoxContainer.new()
+	columns.size_flags_vertical = Control.SIZE_EXPAND_FILL
+	columns.add_theme_constant_override("separation", 12)
+	root.add_child(columns)
+
+	# Gauche : races
+	var left := PanelContainer.new()
+	left.custom_minimum_size = Vector2(230, 0)
+	left.add_theme_stylebox_override("panel", _panel_style())
+	columns.add_child(left)
+	var left_box := VBoxContainer.new()
+	left_box.add_theme_constant_override("separation", 8)
+	left.add_child(left_box)
+	left_box.add_child(_section_title("Races"))
+	var race_scroll := ScrollContainer.new()
+	race_scroll.size_flags_vertical = Control.SIZE_EXPAND_FILL
+	race_scroll.horizontal_scroll_mode = ScrollContainer.SCROLL_MODE_DISABLED
+	left_box.add_child(race_scroll)
+	_race_list = VBoxContainer.new()
+	_race_list.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	_race_list.add_theme_constant_override("separation", 4)
+	race_scroll.add_child(_race_list)
+
+	# Centre : fiche du personnage sélectionné
+	var center := PanelContainer.new()
+	center.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	center.add_theme_stylebox_override("panel", _panel_style())
+	columns.add_child(center)
+	var center_holder := Control.new()
+	center_holder.clip_contents = true
+	center.add_child(center_holder)
+	_center_scroll = ScrollContainer.new()
+	_center_scroll.horizontal_scroll_mode = ScrollContainer.SCROLL_MODE_DISABLED
+	_center_scroll.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
+	center_holder.add_child(_center_scroll)
+	_center_box = VBoxContainer.new()
+	_center_box.add_theme_constant_override("separation", 8)
+	_center_box.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	_center_scroll.add_child(_center_box)
+
+	# Droite : équipe
+	var right := PanelContainer.new()
+	right.custom_minimum_size = Vector2(330, 0)
+	right.add_theme_stylebox_override("panel", _panel_style())
+	columns.add_child(right)
+	var right_box := VBoxContainer.new()
+	right_box.add_theme_constant_override("separation", 8)
+	right.add_child(right_box)
+	right_box.add_child(_section_title("Équipe"))
+	_slot_scroll = ScrollContainer.new()
+	_slot_scroll.size_flags_vertical = Control.SIZE_EXPAND_FILL
+	_slot_scroll.horizontal_scroll_mode = ScrollContainer.SCROLL_MODE_DISABLED
+	right_box.add_child(_slot_scroll)
+	_slot_grid = GridContainer.new()
+	_slot_grid.columns = 3
+	_slot_grid.add_theme_constant_override("h_separation", 8)
+	_slot_grid.add_theme_constant_override("v_separation", 8)
+	_slot_grid.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	_slot_scroll.add_child(_slot_grid)
+
+	_warning_label = Label.new()
+	_warning_label.add_theme_font_size_override("font_size", 12)
+	_warning_label.add_theme_color_override("font_color", Color(0.95, 0.65, 0.3))
+	_warning_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	_warning_label.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	right_box.add_child(_warning_label)
+
+	# --- Bas : Retour / Valider ---
+	var bottom := HBoxContainer.new()
+	root.add_child(bottom)
+	if BACK_SCENE_PATH != "":
+		var back := Button.new()
+		back.text = "←  Retour"
+		back.custom_minimum_size = Vector2(150, 40)
+		back.pressed.connect(func(): get_tree().change_scene_to_file(BACK_SCENE_PATH))
+		bottom.add_child(back)
+	var save_button := Button.new()
+	save_button.text = "Sauvegarder"
+	save_button.tooltip_text = "Enregistre cette équipe dans un emplacement"
+	save_button.custom_minimum_size = Vector2(150, 40)
+	save_button.pressed.connect(func(): _open_save_popup(true))
+	bottom.add_child(save_button)
+	var load_button := Button.new()
+	load_button.text = "Charger"
+	load_button.tooltip_text = "Reprend une équipe ou une ascension sauvegardée"
+	load_button.custom_minimum_size = Vector2(150, 40)
+	load_button.pressed.connect(func(): _open_save_popup(false))
+	bottom.add_child(load_button)
+	_continue_button = Button.new()
+	_continue_button.custom_minimum_size = Vector2(260, 40)
+	_continue_button.visible = false
+	UITheme.style_primary_button(_continue_button)
+	_continue_button.pressed.connect(func(): _load_slot(TowerSave.AUTO_SLOT))
+	bottom.add_child(_continue_button)
+	var bottom_spacer := Control.new()
+	bottom_spacer.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	bottom.add_child(bottom_spacer)
+	_validate_button = Button.new()
+	_validate_button.text = "✓  Valider"
+	_validate_button.tooltip_text = "Lance l'ascension avec cette équipe"
+	_validate_button.custom_minimum_size = Vector2(220, 44)
+	_validate_button.add_theme_font_size_override("font_size", 18)
+	_validate_button.add_theme_stylebox_override("normal", _button_style(Color(0.45, 0.30, 0.10), GOLD))
+	_validate_button.add_theme_stylebox_override("hover", _button_style(Color(0.58, 0.39, 0.13), Color(1, 0.85, 0.45)))
+	_validate_button.add_theme_stylebox_override("pressed", _button_style(Color(0.35, 0.23, 0.07), GOLD))
+	_validate_button.pressed.connect(_on_validate_pressed)
+	bottom.add_child(_validate_button)
+
+	_build_equip_popup()
+	_build_save_popup()
+
+# ---------- Rafraîchissement ----------
+
+# Reconstruit la liste des races, la fiche centrale et les emplacements. Le
+# défilement de la fiche est conservé : sans ça, chaque clic sur un +/-
+# renverrait la vue en haut.
+func _refresh() -> void:
+	if _center_box == null:
+		return
+	var keep_v: int = _center_scroll.scroll_vertical
+	var keep_race_v: int = (_race_list.get_parent() as ScrollContainer).scroll_vertical
+
+	if TowerManager.team.is_empty():
+		_selected_index = 0
+	elif _selected_index > TowerManager.team.size():
+		_selected_index = TowerManager.team.size() - 1
+
+	_points_label.text = "Points restants : %d / %d" % [TowerManager.points_remaining, TowerManager.TOTAL_POINTS]
+	_gold_label.text = "●  Or : %d PO" % TowerManager.gold
+	if TowerManager.last_run_floors_cleared >= 0:
+		_points_label.text += "   —   Dernière ascension : %d étage(s)" % TowerManager.last_run_floors_cleared
+
+	_rebuild_race_list()
+	_rebuild_slots()
+	_rebuild_center()
+
+	var equipment_notice: String = TowerManager.take_equipment_notice()
+	if equipment_notice != "":
+		_notice = equipment_notice if _notice == "" else _notice + " " + equipment_notice
+
+	_update_validate_state()
+
+	if is_inside_tree():
+		await get_tree().process_frame  # Le contenu doit être remesuré avant de restaurer le défilement.
+		_center_scroll.scroll_vertical = keep_v
+		(_race_list.get_parent() as ScrollContainer).scroll_vertical = keep_race_v
+
+func _clear_children(node: Node) -> void:
+	for child in node.get_children():
+		node.remove_child(child)  # Retiré TOUT DE SUITE (pas seulement libéré en fin d'image).
+		child.queue_free()
+
+func _update_validate_state() -> void:
+	var ready_to_start: bool = TowerManager.is_team_ready()
+	_validate_button.disabled = not ready_to_start
+	_update_continue_button()
+	_warning_label.text = ""
+	if _notice != "":
+		_warning_label.text = _notice
+		_notice = ""
+		return
+	if ready_to_start:
+		return
+	if TowerManager.team.is_empty():
+		_warning_label.text = "Choisis une race pour créer ton premier personnage."
+	elif TowerManager.points_remaining > 0:
+		_warning_label.text = "Il reste %d point(s) à dépenser en niveaux." % TowerManager.points_remaining
+	else:
+		for i in range(TowerManager.team.size()):
+			var reason: String = TowerManager.get_incomplete_reason(i)
+			if reason != "":
+				_warning_label.text = "%s : %s." % [TowerManager.team[i].character_name, reason]
+				return
+
+func _selected_character():
+	if _selected_index >= 0 and _selected_index < TowerManager.team.size():
+		return TowerManager.team[_selected_index]
+	return null
+
+# ---------- Colonne de gauche : races ----------
+
+func _race_icon(race_name: String) -> Texture2D:
+	return TokenDatabase.texture_by_name(race_name)
+
+func _rebuild_race_list() -> void:
+	_clear_children(_race_list)
+	var current = _selected_character()
+	for race_name in TowerManager.get_available_races():
+		var btn := Button.new()
+		btn.text = race_name
+		btn.alignment = HORIZONTAL_ALIGNMENT_LEFT
+		btn.custom_minimum_size = Vector2(0, 40)
+		btn.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+		btn.clip_text = true
+		var icon := _race_icon(race_name)
+		if icon != null:
+			btn.icon = icon
+			btn.expand_icon = true
+			btn.add_theme_constant_override("icon_max_width", 32)
+		var race = RaceDatabase.build(race_name)
+		btn.tooltip_text = race.get_display_text() if race != null else race_name
+		if current != null and current.race_name == race_name:
+			var sel := _button_style(Color(0.16, 0.12, 0.05), GOLD)
+			sel.set_border_width_all(2)
+			for state in ["normal", "hover", "pressed"]:
+				btn.add_theme_stylebox_override(state, sel)
+		btn.pressed.connect(func(): _on_race_clicked(race_name))
+		_race_list.add_child(btn)
+
+func _on_race_clicked(race_name: String) -> void:
+	if _selected_character() == null:
+		# Emplacement vide : choisir une race crée le personnage (1 point).
+		var c = TowerManager.add_character()
+		if c == null:
+			_notice = "Plus aucun point disponible pour un nouveau personnage."
+			_refresh()
+			return
+		_selected_index = TowerManager.team.size() - 1
+	TowerManager.set_race(_selected_index, race_name)
+	_refresh()
+
+# ---------- Colonne de droite : emplacements ----------
+
+func _rebuild_slots() -> void:
+	_clear_children(_slot_grid)
+	var count: int = maxi(SLOT_COUNT_MIN, TowerManager.team.size() + 1)
+	for i in range(count):
+		_slot_grid.add_child(_build_slot(i))
+
+func _build_slot(i: int) -> Control:
+	var filled: bool = i < TowerManager.team.size()
+	var selected: bool = i == _selected_index
+	var border := GOLD if selected else Color(0.3, 0.26, 0.16)
+	if filled and not selected:
+		border = Color(0.35, 0.65, 0.45) if TowerManager.is_character_complete(i) else Color(0.8, 0.5, 0.25)
+
 	var panel := PanelContainer.new()
-	panel.custom_minimum_size = Vector2(CARD_WIDTH, CARD_HEIGHT)
-	panel.size_flags_vertical = Control.SIZE_SHRINK_BEGIN
-	panel.add_theme_stylebox_override("panel", _card_style(Color(0.45, 0.45, 0.5), Color(0.1, 0.1, 0.12, 0.6)))
+	panel.custom_minimum_size = Vector2(92, 118)
+	panel.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	panel.mouse_filter = Control.MOUSE_FILTER_STOP
+	var style := _card_style(border, Color(0.07, 0.08, 0.11, 0.95))
+	style.set_corner_radius_all(6)
+	style.set_content_margin_all(6)
+	if selected:
+		style.set_border_width_all(3)
+	panel.add_theme_stylebox_override("panel", style)
 
-	var center := CenterContainer.new()
-	panel.add_child(center)
+	var box := VBoxContainer.new()
+	box.add_theme_constant_override("separation", 2)
+	box.mouse_filter = Control.MOUSE_FILTER_PASS
+	panel.add_child(box)
 
-	var btn := Button.new()
-	btn.text = "+"
-	btn.add_theme_font_size_override("font_size", 52)
-	btn.custom_minimum_size = Vector2(120, 120)
-	btn.disabled = TowerManager.points_remaining < 1
-	btn.tooltip_text = "Ajouter un personnage (coûte 1 point)" if not btn.disabled else "Plus aucun point à dépenser"
-	btn.pressed.connect(_on_add_character_pressed)
-	center.add_child(btn)
+	if filled:
+		var c = TowerManager.team[i]
+		var icon := TextureRect.new()
+		icon.texture = _race_icon(c.race_name)
+		icon.custom_minimum_size = Vector2(0, 62)
+		icon.expand_mode = TextureRect.EXPAND_IGNORE_SIZE
+		icon.stretch_mode = TextureRect.STRETCH_KEEP_ASPECT_CENTERED
+		icon.mouse_filter = Control.MOUSE_FILTER_PASS
+		box.add_child(icon)
+		var name_label := _make_label(c.character_name)
+		name_label.add_theme_font_size_override("font_size", 12)
+		name_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+		name_label.clip_text = true
+		name_label.mouse_filter = Control.MOUSE_FILTER_PASS
+		box.add_child(name_label)
+		var info := _make_label("Niv. %d" % c.level)
+		info.add_theme_font_size_override("font_size", 11)
+		info.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+		info.modulate = Color(0.8, 0.78, 0.7)
+		info.mouse_filter = Control.MOUSE_FILTER_PASS
+		box.add_child(info)
+		var metier_code: String = c.get_current_metier_code()
+		var metier_label := _make_label(metier_code if metier_code != "" else "—")
+		metier_label.add_theme_font_size_override("font_size", 11)
+		metier_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+		metier_label.modulate = Color(0.9, 0.78, 0.45)
+		metier_label.mouse_filter = Control.MOUSE_FILTER_PASS
+		box.add_child(metier_label)
+	else:
+		var center := CenterContainer.new()
+		center.size_flags_vertical = Control.SIZE_EXPAND_FILL
+		center.mouse_filter = Control.MOUSE_FILTER_PASS
+		box.add_child(center)
+		var plus := _make_label("+")
+		plus.add_theme_font_size_override("font_size", 38)
+		plus.modulate = Color(0.55, 0.5, 0.38) if TowerManager.points_remaining > 0 else Color(0.3, 0.3, 0.3)
+		plus.mouse_filter = Control.MOUSE_FILTER_PASS
+		center.add_child(plus)
+		panel.tooltip_text = "Sélectionner cet emplacement (choisis ensuite une race)"
+	var number := _make_label(str(i + 1))
+	number.add_theme_font_size_override("font_size", 11)
+	number.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	number.modulate = Color(0.7, 0.62, 0.4)
+	number.mouse_filter = Control.MOUSE_FILTER_PASS
+	box.add_child(number)
+
+	panel.gui_input.connect(func(event):
+		if event is InputEventMouseButton and event.pressed and event.button_index == MOUSE_BUTTON_LEFT:
+			_selected_index = mini(i, TowerManager.team.size())
+			_refresh()
+	)
 	return panel
 
-# Carte d'un personnage. Bordure verte = tous ses choix sont faits,
-# orange = il manque encore un métier (ou une évolution).
-func _build_character_card(index: int) -> Control:
-	var complete: bool = TowerManager.is_character_complete(index)
-	var border := Color(0.35, 0.65, 0.45) if complete else Color(0.8, 0.55, 0.25)
+# ---------- Colonne centrale : fiche du personnage ----------
 
-	# Taille FIXE (largeur ET hauteur) : ni le texte d'une liste déroulante, ni
-	# une ligne en plus ne doivent agrandir ou rétrécir la carte — ni, par
-	# contagion, étirer les autres (la rangée donne la même hauteur à toutes).
-	var panel := PanelContainer.new()
-	panel.custom_minimum_size = Vector2(CARD_WIDTH, CARD_HEIGHT)
-	panel.size_flags_horizontal = Control.SIZE_SHRINK_BEGIN
-	panel.size_flags_vertical = Control.SIZE_SHRINK_BEGIN
-	panel.clip_contents = true
-	panel.add_theme_stylebox_override("panel", _card_style(border, Color(0.13, 0.14, 0.17)))
+func _rebuild_center() -> void:
+	_clear_children(_center_box)
+	var index: int = _selected_index
+	var c = _selected_character()
+	if c == null:
+		var hint := _make_label("Choisis une race dans la liste de gauche\npour créer le personnage de cet emplacement.")
+		hint.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+		hint.vertical_alignment = VERTICAL_ALIGNMENT_CENTER
+		hint.modulate = Color(0.7, 0.66, 0.55)
+		hint.size_flags_vertical = Control.SIZE_EXPAND_FILL
+		hint.custom_minimum_size = Vector2(0, 240)
+		_center_box.add_child(hint)
+		return
 
-	# Un ScrollContainer dont le défilement horizontal est DÉSACTIVÉ prend la
-	# largeur minimale de son contenu : un nom de race ou de métier plus long
-	# élargissait donc la carte. On le range dans un Control simple (qui ne
-	# transmet aucune taille minimale) et on laisse le contenu défiler au
-	# lieu de pousser les bords.
-	var holder := Control.new()
-	holder.clip_contents = true
-	panel.add_child(holder)
+	_center_box.add_child(_build_card_header(index))
 
-	var inner_scroll := ScrollContainer.new()
-	inner_scroll.horizontal_scroll_mode = ScrollContainer.SCROLL_MODE_SHOW_NEVER
-	inner_scroll.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
-	holder.add_child(inner_scroll)
+	var race = RaceDatabase.build(c.race_name)
+	var race_line := _make_label(race.get_display_text() if race != null else c.race_name)
+	race_line.add_theme_font_size_override("font_size", 12)
+	race_line.modulate = Color(0.8, 0.75, 0.6)
+	_center_box.add_child(race_line)
 
-	var card := VBoxContainer.new()
-	card.add_theme_constant_override("separation", 3)
-	card.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-	card.custom_minimum_size = Vector2(CARD_WIDTH - 44, 0)  # Largeur utile (bordure, marges et barre de défilement déduites).
-	inner_scroll.add_child(card)
+	# PV / EA de départ du personnage (race, métiers, niveaux) ; détail au survol.
+	var progression: Dictionary = TowerManager.get_hp_ea_progression(index)
+	var vitals := _make_label("PV : %d     EA : %d" % [progression["hp"], progression["ea"]])
+	vitals.add_theme_font_size_override("font_size", 14)
+	vitals.add_theme_color_override("font_color", Color(0.95, 0.85, 0.6))
+	vitals.mouse_filter = Control.MOUSE_FILTER_STOP
+	vitals.tooltip_text = str(progression["detail"])
+	_center_box.add_child(vitals)
 
-	card.add_child(_build_card_header(index))
-	card.add_child(_build_race_selector(index))
-	card.add_child(_build_level_row(index))
-	card.add_child(HSeparator.new())
-	card.add_child(_build_stats_block(index))
-	card.add_child(HSeparator.new())
-	card.add_child(_build_metier_block(index))
-	card.add_child(HSeparator.new())
-	card.add_child(_build_equipment_block(index))
-	_constrain_width(card)
-	return panel
+	var main := HBoxContainer.new()
+	main.add_theme_constant_override("separation", 12)
+	_center_box.add_child(main)
+
+	# Portrait : illustration de la race si elle existe, sinon le token en grand.
+	var portrait_frame := PanelContainer.new()
+	portrait_frame.custom_minimum_size = Vector2(204, 0)
+	portrait_frame.size_flags_vertical = Control.SIZE_SHRINK_BEGIN
+	portrait_frame.add_theme_stylebox_override("panel", _panel_style(GOLD_DIM, 6, 6))
+	main.add_child(portrait_frame)
+	var portrait := TextureRect.new()
+	var art := _get_race_texture(c.race_name)
+	portrait.texture = art if art != null else _race_icon(c.race_name)
+	portrait.custom_minimum_size = Vector2(190, 183 if art != null else 178)
+	portrait.expand_mode = TextureRect.EXPAND_IGNORE_SIZE
+	portrait.stretch_mode = TextureRect.STRETCH_KEEP_ASPECT_CENTERED
+	portrait_frame.add_child(portrait)
+
+	var side := VBoxContainer.new()
+	side.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	side.add_theme_constant_override("separation", 6)
+	main.add_child(side)
+	side.add_child(_build_level_row(index))
+	side.add_child(HSeparator.new())
+	side.add_child(_build_stats_block(index))
+
+	_center_box.add_child(HSeparator.new())
+	_center_box.add_child(_build_metier_block(index))
+	_center_box.add_child(HSeparator.new())
+	_center_box.add_child(_build_abilities_block(index))
+	_center_box.add_child(HSeparator.new())
+	_center_box.add_child(_build_equipment_block(index))
+	_constrain_width(_center_box)
 
 # Aucun texte ne doit pouvoir élargir la carte : un Label posé directement
 # dans une colonne passe à la ligne s'il est trop long, les autres sont
@@ -321,61 +612,6 @@ func _build_card_header(index: int) -> Control:
 		_refresh()
 	)
 	row.add_child(remove_btn)
-	return row
-
-# Race : flèches latérales, illustration entre les deux (ou le nom,
-# faute d'image).
-func _build_race_selector(index: int) -> Control:
-	var c = TowerManager.team[index]
-	var row := HBoxContainer.new()
-	row.add_theme_constant_override("separation", 6)
-
-	var left := Button.new()
-	left.text = "◀"
-	left.tooltip_text = "Race précédente"
-	left.size_flags_vertical = Control.SIZE_SHRINK_CENTER
-	left.pressed.connect(func():
-		TowerManager.cycle_race(index, -1)
-		_refresh()
-	)
-	row.add_child(left)
-
-	var frame := PanelContainer.new()
-	frame.custom_minimum_size = Vector2(150, 56)
-	frame.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-	frame.mouse_filter = Control.MOUSE_FILTER_PASS  # Pour que l'infobulle s'affiche.
-	frame.add_theme_stylebox_override("panel", _card_style(Color(0.3, 0.3, 0.36), Color(0.08, 0.08, 0.1)))
-	var race = RaceDatabase.build(c.race_name)
-	frame.tooltip_text = race.get_display_text() if race != null else c.race_name
-
-	var texture := _get_race_texture(c.race_name)
-	if texture != null:
-		var image := TextureRect.new()
-		image.texture = texture
-		image.expand_mode = TextureRect.EXPAND_IGNORE_SIZE
-		image.stretch_mode = TextureRect.STRETCH_KEEP_ASPECT_CENTERED
-		image.mouse_filter = Control.MOUSE_FILTER_PASS
-		frame.add_child(image)
-	else:
-		var name_label := Label.new()
-		name_label.text = c.race_name
-		name_label.add_theme_font_size_override("font_size", 18)
-		name_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
-		name_label.vertical_alignment = VERTICAL_ALIGNMENT_CENTER
-		name_label.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
-		name_label.mouse_filter = Control.MOUSE_FILTER_PASS
-		frame.add_child(name_label)
-	row.add_child(frame)
-
-	var right := Button.new()
-	right.text = "▶"
-	right.tooltip_text = "Race suivante"
-	right.size_flags_vertical = Control.SIZE_SHRINK_CENTER
-	right.pressed.connect(func():
-		TowerManager.cycle_race(index, 1)
-		_refresh()
-	)
-	row.add_child(right)
 	return row
 
 # Illustration de la race si le fichier existe (voir RACE_IMAGE_DIR), sinon null.
@@ -560,6 +796,92 @@ func _build_stats_block(index: int) -> Control:
 	return box
 
 # Métier de base (niveau 1) puis les métiers de niveau 4 / 7 / 10.
+# Aperçu des sorts et compétences du personnage (race + métiers + niveau),
+# d'après une unité de combat temporaire construite comme en combat.
+func _build_abilities_block(index: int) -> Control:
+	var box := VBoxContainer.new()
+	box.add_theme_constant_override("separation", 4)
+	var title := Label.new()
+	title.text = "Sorts et compétences"
+	title.add_theme_font_size_override("font_size", 13)
+	title.add_theme_color_override("font_color", GOLD)
+	box.add_child(title)
+
+	var character = TowerManager.team[index]
+	var unit := CombatUnit.new()
+	unit.team = CombatUnit.Team.PLAYER
+	unit.unit_name = character.character_name
+	unit.spells = []
+	unit.equipped_race = RaceDatabase.build(character.race_name)
+	var chain: Array = TowerManager.get_metier_chain_codes(index)
+	if not chain.is_empty():
+		unit.equipped_metier = MetierDatabase.build(str(chain.back()))
+		var top_first: Array = chain.duplicate()
+		top_first.reverse()
+		unit.forced_metier_chain = top_first
+	unit.level = character.level
+	unit.pretre_order = character.pretre_order
+	unit.base_courage = TowerManager.get_stat_value(index, "courage")
+	unit.base_intelligence_stat = TowerManager.get_stat_value(index, "intelligence")
+	unit.base_charisme_stat = TowerManager.get_stat_value(index, "charisme")
+	unit.base_adresse_stat = TowerManager.get_stat_value(index, "adresse")
+	unit.base_force_stat = TowerManager.get_stat_value(index, "force")
+	unit.base_chance_stat = TowerManager.get_stat_value(index, "chance")
+	add_child(unit)  # Déclenche _ready() : sorts de race et de métiers.
+	unit.visible = false
+
+	var skill_codes: Array = unit.get_skill_codes()
+	var spell_list: Array = []
+	for sp in unit.spells:
+		if not sp.is_weapon_attack:
+			spell_list.append(sp)
+
+	var scroll := ScrollContainer.new()
+	scroll.custom_minimum_size = Vector2(0, 170)
+	scroll.horizontal_scroll_mode = ScrollContainer.SCROLL_MODE_DISABLED
+	box.add_child(scroll)
+	var inner := VBoxContainer.new()
+	inner.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	inner.add_theme_constant_override("separation", 2)
+	scroll.add_child(inner)
+
+	var seen: Dictionary = {}
+	var sk_count := 0
+	for code in skill_codes:
+		var skill = SkillDatabase.build(code)
+		if skill == null:
+			continue
+		sk_count += 1
+		var l := Label.new()
+		l.text = "• " + skill.skill_name
+		l.add_theme_font_size_override("font_size", 12)
+		l.modulate = Color(0.75, 0.85, 0.75)
+		l.mouse_filter = Control.MOUSE_FILTER_STOP
+		l.tooltip_text = skill.get_tooltip_text()
+		inner.add_child(l)
+	if sk_count > 0 and not spell_list.is_empty():
+		inner.add_child(HSeparator.new())
+	for sp in spell_list:
+		if seen.has(sp.spell_name):
+			continue
+		seen[sp.spell_name] = true
+		var l2 := Label.new()
+		l2.text = "✦ " + sp.spell_name
+		l2.add_theme_font_size_override("font_size", 12)
+		l2.modulate = Color(0.9, 0.85, 0.7)
+		l2.mouse_filter = Control.MOUSE_FILTER_STOP
+		l2.tooltip_text = sp.get_tooltip_text(unit)
+		inner.add_child(l2)
+	if sk_count == 0 and spell_list.is_empty():
+		var none := Label.new()
+		none.text = "Aucun sort ni compétence spéciale."
+		none.add_theme_font_size_override("font_size", 12)
+		none.modulate = Color(0.6, 0.6, 0.6)
+		inner.add_child(none)
+
+	unit.queue_free()
+	return box
+
 func _build_metier_block(index: int) -> Control:
 	var box := VBoxContainer.new()
 	box.add_theme_constant_override("separation", 4)
@@ -710,6 +1032,30 @@ func _build_equipment_block(index: int) -> Control:
 		if acc != null:
 			accessory_names.append(acc.accessory_name)
 	box.add_child(_gear_line("Accessoires", ", ".join(accessory_names)))
+
+	# Armes de réserve : emportées au combat, équipées au double-clic.
+	if not c.spare_weapons.is_empty():
+		var spare_title := Label.new()
+		spare_title.text = "Réserve (%d)" % c.spare_weapons.size()
+		spare_title.add_theme_font_size_override("font_size", 12)
+		box.add_child(spare_title)
+		for i in range(c.spare_weapons.size()):
+			var spare_row := HBoxContainer.new()
+			var spare_label := Label.new()
+			spare_label.text = "  %s (%d PO)" % [c.spare_weapons[i].weapon_name, c.spare_weapons[i].price]
+			spare_label.add_theme_font_size_override("font_size", 12)
+			spare_label.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+			spare_row.add_child(spare_label)
+			var sell_btn := Button.new()
+			sell_btn.text = "Vendre"
+			sell_btn.custom_minimum_size = Vector2(64, 0)
+			var spare_index: int = i
+			sell_btn.pressed.connect(func():
+				TowerManager.sell_spare_weapon(index, spare_index)
+				_refresh()
+			)
+			spare_row.add_child(sell_btn)
+			box.add_child(spare_row)
 
 	# Pièces obligatoires du métier qui manquent encore (Gladiateur : casque
 	# et bouclier) : le personnage reste incomplet tant qu'elles manquent.
@@ -1205,6 +1551,21 @@ func _build_equip_row(data: Dictionary, c) -> Control:
 		)
 		row.add_child(off_btn)
 
+	# Armes : un bouton pour en acheter autant que voulu en RÉSERVE (inventaire de
+	# combat, équipables au double-clic pendant le combat).
+	if _equip_type == "weapons":
+		var spare_btn := Button.new()
+		spare_btn.text = "+ Sac"
+		spare_btn.custom_minimum_size = Vector2(64, 0)
+		spare_btn.disabled = block_reason != "" or TowerManager.gold < price
+		spare_btn.tooltip_text = "Acheter en réserve (autant que tu veux) : équipable pendant le combat."
+		spare_btn.pressed.connect(func():
+			var spare_item = _build_item_from_data(data)
+			if TowerManager.buy_spare_weapon(_equip_popup_index, spare_item, data):
+				_populate_equip_list()
+		)
+		row.add_child(spare_btn)
+
 	if block_reason != "":
 		var block_label := Label.new()
 		block_label.text = "      Interdit — " + block_reason
@@ -1248,3 +1609,124 @@ func _on_validate_pressed() -> void:
 		_refresh()
 		return
 	_validate_button.disabled = true  # Un second clic relancerait le changement de scène.
+
+# ---------- Sauvegarde / chargement ----------
+
+func _build_save_popup() -> void:
+	_save_popup = PopupPanel.new()
+	add_child(_save_popup)
+	_save_popup_box = VBoxContainer.new()
+	_save_popup_box.add_theme_constant_override("separation", 8)
+	_save_popup_box.custom_minimum_size = Vector2(640, 0)
+	_save_popup.add_child(_save_popup_box)
+	_save_popup.popup_hide.connect(func(): _pending_overwrite_slot = -1)
+
+# Bouton « Continuer l'ascension » : visible seulement s'il existe une
+# sauvegarde automatique d'ascension.
+func _update_continue_button() -> void:
+	if _continue_button == null:
+		return
+	var info: Dictionary = TowerSave.summary(TowerSave.AUTO_SLOT)
+	var resumable: bool = not info.is_empty() and str(info.get("phase", "")) == "run"
+	_continue_button.visible = resumable
+	if resumable:
+		_continue_button.text = "Continuer l'ascension (étage %d)" % int(info.get("floor", 1))
+
+# Texte de présentation d'un emplacement.
+func _slot_description(info: Dictionary) -> String:
+	if info.is_empty():
+		return "Vide"
+	var members: Array = []
+	for member in info.get("team", []):
+		members.append("%s (%s, niv. %d)" % [str(member.get("name", "?")), str(member.get("race", "?")), int(member.get("level", 1))])
+	var kind: String = "Ascension — étage %d" % int(info.get("floor", 1)) if str(info.get("phase", "")) == "run" else "Équipe en préparation"
+	return "%s\n%s\n%s" % [kind, ", ".join(members), str(info.get("saved_at", ""))]
+
+# Ouvre la fenêtre des emplacements : `saving` vrai pour enregistrer, faux pour charger.
+func _open_save_popup(saving: bool) -> void:
+	_pending_overwrite_slot = -1
+	_rebuild_save_popup(saving)
+	_save_popup.popup_centered()
+
+func _rebuild_save_popup(saving: bool) -> void:
+	_clear_children(_save_popup_box)
+	_save_popup_box.add_child(UITheme.section_title("Sauvegarder l'équipe" if saving else "Charger"))
+
+	var slots: Array = []
+	if not saving:
+		slots.append(TowerSave.AUTO_SLOT)  # La sauvegarde automatique ne s'écrase pas à la main.
+	for n in range(1, TowerSave.SLOT_COUNT + 1):
+		slots.append(n)
+
+	for slot in slots:
+		var info: Dictionary = TowerSave.summary(slot)
+		var row := HBoxContainer.new()
+		row.add_theme_constant_override("separation", 10)
+		_save_popup_box.add_child(row)
+
+		var text_box := VBoxContainer.new()
+		text_box.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+		row.add_child(text_box)
+		var title := Label.new()
+		title.text = TowerSave.slot_label(slot)
+		title.add_theme_color_override("font_color", GOLD)
+		text_box.add_child(title)
+		var detail := Label.new()
+		detail.text = _slot_description(info)
+		detail.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+		detail.custom_minimum_size = Vector2(420, 0)
+		detail.add_theme_font_size_override("font_size", 12)
+		text_box.add_child(detail)
+
+		var action := Button.new()
+		action.custom_minimum_size = Vector2(120, 36)
+		if saving:
+			action.text = "Écraser ?" if _pending_overwrite_slot == slot else ("Écraser" if not info.is_empty() else "Sauvegarder")
+			action.pressed.connect(func(): _on_save_slot_pressed(slot, not info.is_empty()))
+		else:
+			action.text = "Charger"
+			action.disabled = info.is_empty()
+			action.pressed.connect(func(): _load_slot(slot))
+		row.add_child(action)
+
+		var erase := Button.new()
+		erase.text = "Suppr."
+		erase.custom_minimum_size = Vector2(70, 36)
+		erase.disabled = info.is_empty()
+		erase.pressed.connect(func():
+			TowerSave.delete(slot)
+			_pending_overwrite_slot = -1
+			_rebuild_save_popup(saving)
+			_update_continue_button())
+		row.add_child(erase)
+
+		_save_popup_box.add_child(HSeparator.new())
+	_save_popup.reset_size()
+
+func _on_save_slot_pressed(slot: int, occupied: bool) -> void:
+	# Écraser une sauvegarde existante demande un second clic.
+	if occupied and _pending_overwrite_slot != slot:
+		_pending_overwrite_slot = slot
+		_rebuild_save_popup(true)
+		return
+	var error: String = TowerManager.save_to_slot(slot)
+	_save_popup.hide()
+	_notice = error if error != "" else "Équipe sauvegardée (%s)." % TowerSave.slot_label(slot).to_lower()
+	_refresh()
+
+# Charge un emplacement : une équipe remplit l'écran de création ; une
+# ascension est reprise au début de son étage.
+func _load_slot(slot: int) -> void:
+	var phase: String = TowerManager.saved_phase(slot)
+	var error: String = TowerManager.load_from_slot(slot)
+	if error == "":
+		if phase == "ascension":
+			error = TowerManager.resume_run()
+		else:
+			_selected_index = 0
+	_save_popup.hide()
+	if error != "":
+		_notice = error
+	elif phase != "ascension":
+		_notice = "Équipe chargée."
+	_refresh()
