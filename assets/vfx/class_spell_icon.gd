@@ -25,6 +25,13 @@ const ICONS: Dictionary = {
 	"Substitution": "substitution",
 	"Porte étendard": "porte_etendard",
 	"Bouclier de Foi": "bouclier_de_foi",
+	"Fortissimo": "fortissimo", "Legato": "legato", "Maestoso": "maestoso", "Molto": "molto",
+	"Adagio": "adagio", "Tranquillo": "tranquillo", "Meno": "meno", "Rubato": "rubato",
+	"Vivace": "vivace", "Slancio": "slancio", "Subito": "subito",
+	"Un pour tous": "un_pour_tous",
+	"GRRRRRBLBLBL": "consume",
+	"Concentration": "concentration",
+	"Désamorcer": "desamorcer",
 }
 
 # Chemin de l'icône d'un sort ("" si le sort n'en a pas).
