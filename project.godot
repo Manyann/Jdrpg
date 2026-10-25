@@ -22,6 +22,8 @@ TowerManager="*uid://cfu6smwcmmq8x"
 
 [display]
 
+window/size/viewport_width=1400
+window/size/viewport_height=800
 window/stretch/mode="canvas_items"
 window/stretch/aspect="expand"
 
